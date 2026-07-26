@@ -12,7 +12,7 @@ import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAF8_1aoveWwJ_trYmPsTdKSNgWaF2orh3U"  
+BOT_TOKEN = "8666764154:AAEizbmKdF_RnqSjnu572hIaIfs1hWSky-o"
 ADMIN_IDS = [8904869158]                     # آیدی عددی ادمین‌ها
 START_DIAMONDS = 50
 REFERRAL_BONUS = 25
@@ -145,6 +145,7 @@ def cmd_start(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data=f"showaccount|{user_id}"))
     markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data=f"showreferral|{user_id}"))
+    markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
 
     caption = "به بات شرط‌بندی خوش اومدید🌹"
 
@@ -231,6 +232,29 @@ def handle_show_referral(call):
     bot.send_message(call.message.chat.id, text)
 
 
+@bot.callback_query_handler(func=lambda call: call.data == "showhelp")
+def handle_show_help(call):
+    bot.answer_callback_query(call.id)
+    text = (
+        "📖 راهنمای استفاده از بات\n\n"
+        "💎 دیدن موجودی:\n"
+        "فقط بنویس و بفرست: موجودی\n\n"
+        "💸 انتقال الماس به یه نفر دیگه:\n"
+        "روی پیام همون شخص توی گروه ریپلای کن و بنویس:\n"
+        "انتقال الماس <مقدار>\n"
+        "مثال: انتقال الماس 200\n\n"
+        "🎲 شرط‌بندی با یه نفر دیگه:\n"
+        "بنویس: شرط بندی <مقدار>\n"
+        "مثال: شرط بندی 20\n"
+        "بعد از زیر پیام دکمه‌ها استفاده کن (لغو شرط / پیوستن / شرط با ربات)\n\n"
+        "👤 حساب کاربری کامل + دکمه انتقال:\n"
+        "بزن /account\n\n"
+        "👥 لینک رفرال برای دعوت دوستات:\n"
+        "بزن /start و روی «زیرمجموعه‌گیری» بزن"
+    )
+    bot.send_message(call.message.chat.id, text)
+
+
 def ask_transfer_target(message, owner_id):
     """مرحله اول: گرفتن آیدی مقصد و مقدار"""
     if message.from_user.id != owner_id:
@@ -246,6 +270,12 @@ def ask_transfer_target(message, owner_id):
 
     target_id, amount = int(parts[0]), int(parts[1])
     ok, result_msg = perform_transfer(owner_id, target_id, amount)
+
+    if not ok and "نزده" in result_msg:
+        result_msg += (
+            "\n\n⚠️ برای اینکه بات بتونه کاربری رو بشناسه، اون شخص باید حتماً یه‌بار "
+            "توی پیوی خودِ بات دستور /start رو بزنه. فقط عضو گروه بودن کافی نیست."
+        )
     bot.reply_to(message, result_msg)
 
     if ok:
@@ -264,56 +294,64 @@ def handle_account_transfer_button(call):
     bot.answer_callback_query(call.id)
     msg = bot.send_message(
         call.message.chat.id,
+        "🔹 روش ساده‌تر (توصیه می‌شه):\n"
+        "توی گروه، روی پیام کاربر مقصد ریپلای کن و بنویس:\n"
+        "انتقال الماس <مقدار>\n(مثال: انتقال الماس 200)\n\n"
+        "🔹 یا از همینجا:\n"
         "آیدی عددی مقصد و مقدار الماس رو اینطوری بفرست:\n<آیدی عددی> <مقدار>\nمثال: 123456789 20\n\n"
-        "(آیدی عددی رو با @userinfobot می‌تونی پیدا کنی)"
+        "⚠️ نکته: کاربر مقصد باید حتماً یه‌بار خودش توی پیوی بات /start زده باشه، "
+        "وگرنه بات نمی‌تونه بشناستش و همیشه خطای «استارت نزده» می‌ده."
     )
     bot.register_next_step_handler(msg, ask_transfer_target, owner_id)
 
 
-# ================== give / take (ادمین) ==================
-def resolve_target(message):
-    if message.reply_to_message:
-        target_id = message.reply_to_message.from_user.id
-        parts = message.text.split()
-        amount = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
-        return target_id, amount
-    parts = message.text.split()
-    if len(parts) >= 3 and parts[1].isdigit() and parts[2].isdigit():
-        return int(parts[1]), int(parts[2])
-    return None, None
-
-
-@bot.message_handler(commands=["give"])
-def cmd_give(message):
+# ================== افزودن الماس (فقط ادمین) - پیام متنی، بدون / ==================
+@bot.message_handler(func=lambda m: m.text and re.match(r"^افزودن\s+الماس\s+\d+$", m.text.strip()))
+def text_add_diamonds(message):
     if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "⛔ فقط ادمین.")
+        bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس اضافه کنه.")
         return
-    target_id, amount = resolve_target(message)
-    if not target_id or not amount or amount <= 0:
-        bot.reply_to(message, "ریپلای + /give <مقدار>   یا   /give <آیدی> <مقدار>")
+    if not message.reply_to_message:
+        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nافزودن الماس <مقدار>\nمثال: افزودن الماس 50")
         return
+
+    amount = int(re.search(r"\d+", message.text).group())
+    if amount <= 0:
+        bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
     if not get_user(target_id):
         bot.reply_to(message, "این کاربر هنوز /start نزده.")
         return
+
     update_diamonds(target_id, amount)
-    bot.reply_to(message, f"✅ {amount} الماس اضافه شد. موجودی: {get_balance(target_id)} 💎")
+    bot.reply_to(message, f"✅ {amount} 💎 به کاربر {target_id} اضافه شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
 
 
-@bot.message_handler(commands=["take"])
-def cmd_take(message):
+# ================== کم کردن الماس (فقط ادمین) - پیام متنی، بدون / ==================
+@bot.message_handler(func=lambda m: m.text and re.match(r"^کم\s*کردن\s+الماس\s+\d+$", m.text.strip()))
+def text_remove_diamonds(message):
     if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "⛔ فقط ادمین.")
+        bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس کم کنه.")
         return
-    target_id, amount = resolve_target(message)
-    if not target_id or not amount or amount <= 0:
-        bot.reply_to(message, "ریپلای + /take <مقدار>   یا   /take <آیدی> <مقدار>")
+    if not message.reply_to_message:
+        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nکم کردن الماس <مقدار>\nمثال: کم کردن الماس 50")
         return
+
+    amount = int(re.search(r"\d+", message.text).group())
+    if amount <= 0:
+        bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
     if not get_user(target_id):
         bot.reply_to(message, "این کاربر هنوز /start نزده.")
         return
+
     deduct = min(amount, get_balance(target_id))
     update_diamonds(target_id, -deduct)
-    bot.reply_to(message, f"✅ {deduct} الماس کم شد. موجودی: {get_balance(target_id)} 💎")
+    bot.reply_to(message, f"✅ {deduct} 💎 از کاربر {target_id} کم شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
 
 
 def perform_transfer(sender_id, target_id, amount):
@@ -346,6 +384,23 @@ def cmd_transfer(message):
         bot.reply_to(message, "مثال: /transfer 20")
         return
     amount = int(parts[1])
+    target_id = message.reply_to_message.from_user.id
+    ok, msg = perform_transfer(sender_id, target_id, amount)
+    bot.reply_to(message, msg)
+
+
+# ---------- پیام متنی ساده «انتقال الماس 200» (بدون /) - برای همه کاربرا داخل گروه ----------
+@bot.message_handler(func=lambda m: m.text and re.match(r"^انتقال\s+الماس\s+\d+$", m.text.strip()))
+def text_transfer(message):
+    sender_id = message.from_user.id
+    if not get_user(sender_id):
+        bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
+        return
+    if not message.reply_to_message:
+        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nانتقال الماس <مقدار>\nمثال: انتقال الماس 200")
+        return
+
+    amount = int(re.search(r"\d+", message.text).group())
     target_id = message.reply_to_message.from_user.id
     ok, msg = perform_transfer(sender_id, target_id, amount)
     bot.reply_to(message, msg)
@@ -493,46 +548,4 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "سازنده حق شرکت در شرط خودش رو نداره!", show_alert=True)
             return
         if not get_user(clicker_id):
-            bot.answer_callback_query(call.id, "اول باید به بات /start بزنی (پیوی بات).", show_alert=True)
-            return
-        if get_balance(clicker_id) < amount:
-            bot.answer_callback_query(call.id, "موجودی الماس کافی نداری.", show_alert=True)
-            return
-
-        # قفل سریع: وضعیت رو همین الان finished نکنیم تا race condition نشه، ولی برای سادگی همینجا رزرو می‌کنیم
-        update_diamonds(clicker_id, -amount)
-        bot.answer_callback_query(call.id, "پیوستی! در حال مشخص شدن نتیجه...")
-        resolve_bet(bet_id, clicker_id, clicker_name, is_bot=False)
-        return
-
-    # ---------- شرط با ربات ----------
-    if action == "bot":
-        if clicker_id != creator_id:
-            bot.answer_callback_query(call.id, "فقط سازنده می‌تونه با ربات شرط ببنده.", show_alert=True)
-            return
-        bot.answer_callback_query(call.id, "در حال شرط‌بندی با ربات...")
-        resolve_bet(bet_id, opponent_id=None, opponent_name="🤖 ربات", is_bot=True)
-        return
-
-
-# ================== راهنما ==================
-@bot.message_handler(commands=["help"])
-def cmd_help(message):
-    bot.reply_to(
-        message,
-        "دستورات:\n"
-        "/start - ثبت‌نام / لینک رفرال\n"
-        "/balance - موجودی الماس\n"
-        "/account - حساب کاربری (با دکمه انتقال الماس)\n"
-        "/transfer (ریپلای) <مقدار> - انتقال دستی\n"
-        "/bet <مقدار> - ساخت شرط جدید (با دکمه)\n"
-        "--- ادمین ---\n"
-        "/give (ریپلای) <مقدار>\n"
-        "/take (ریپلای) <مقدار>"
-    )
-
-
-if __name__ == "__main__":
-    print("Bot is running...")
-    bot.infinity_polling()
-  
+       
