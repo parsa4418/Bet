@@ -12,7 +12,7 @@ import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAF8_1aoveWwJ_trYmPsTdKSNgWaF2orh3U_خودتو_اینجا_بذار"   # از BotFather بگیر
+BOT_TOKEN = "8666764154:AAF8_1aoveWwJ_trYmPsTdKSNgWaF2orh3U"  
 ADMIN_IDS = [8904869158]                     # آیدی عددی ادمین‌ها
 START_DIAMONDS = 50
 REFERRAL_BONUS = 25
