@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 بات شرط‌بندی الماس با Webhook (مناسب برای Render رایگان)
+آدرس ربات: https://bet-bot-e1c2.onrender.com
 """
 
 import sqlite3
@@ -11,7 +12,7 @@ import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAE9SBH0afpmAN1S_zQG6FUS_Ut5fS_ANzM"
+BOT_TOKEN = "8666764154:AAEySG8PvDBBEq03EspLuCteDsW0muF3oUk"
 ADMIN_IDS = [8904869158]
 START_DIAMONDS = 50
 REFERRAL_BONUS = 25
@@ -565,7 +566,7 @@ def webhook():
 
 # ================== اجرا ==================
 if __name__ == "__main__":
-    WEBHOOK_URL = f"https://your-bot-name.onrender.com/webhook"
+    WEBHOOK_URL = "https://bet-bot-e1c2.onrender.com/webhook"
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
     app.run(host="0.0.0.0", port=8080)
