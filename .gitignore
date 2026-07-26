@@ -1,4 +1,35 @@
+# دیتابیس محلی (نباید در گیت باشه)
 diamonds.db
+*.db
+*.sqlite3
+
+# فایل‌های کش پایتون
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# متغیرهای محیطی (توکن و اطلاعات حساس)
 .env
+.env.local
+.env.*.local
+
+# محیط مجازی
+venv/
+.env/
+.venv/
+env/
+
+# فایل‌های لاگ
+*.log
+
+# فایل‌های مربوط به IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# فایل‌های سیستمی
+.DS_Store
+Thumbs.db
