@@ -1,26 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-بات شرط‌بندی الماس برای تلگرام (نسخه PvP با دکمه شیشه‌ای)
-نیازمندی: pip install pyTelegramBotAPI
-اجرا: python bot.py
+بات شرط‌بندی الماس با Webhook (مناسب برای Render رایگان)
 """
 
 import sqlite3
 import random
 import re
+from flask import Flask, request
 import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAFkyPIALZYMRoL9ocLhgUP_Iup2yxNzU8M"
+BOT_TOKEN = "8666764154:AAE9SBH0afpmAN1S_zQG6FUS_Ut5fS_ANzM"
 ADMIN_IDS = [8904869158]
 START_DIAMONDS = 50
 REFERRAL_BONUS = 25
 TAX_RATE = 0.10
 TAX_RECEIVER_ID = ADMIN_IDS[0]
-WELCOME_IMAGE = "welcome.jpg"
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 DB_PATH = "diamonds.db"
 
 
@@ -68,6 +67,12 @@ def create_user(user_id, username, referred_by=None):
 
 
 def update_diamonds(user_id, amount):
+    # جلوگیری از OverflowError
+    max_int = 9223372036854775807
+    if amount > max_int:
+        amount = max_int
+    elif amount < -max_int:
+        amount = -max_int
     conn = get_conn()
     conn.execute("UPDATE users SET diamonds = diamonds + ? WHERE user_id=?", (amount, user_id))
     conn.commit()
@@ -116,7 +121,7 @@ def set_bet_status(bet_id, status):
     conn.close()
 
 
-# ================== استارت + رفرال ==================
+# ================== هندلرها ==================
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
     user_id = message.from_user.id
@@ -147,12 +152,7 @@ def cmd_start(message):
     markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
 
     caption = "به بات شرط‌بندی خوش اومدید🌹"
-
-    try:
-        with open(WELCOME_IMAGE, "rb") as photo:
-            bot.send_photo(message.chat.id, photo, caption=caption, reply_markup=markup)
-    except FileNotFoundError:
-        bot.send_message(message.chat.id, caption, reply_markup=markup)
+    bot.send_message(message.chat.id, caption, reply_markup=markup)
 
 
 @bot.message_handler(commands=["balance", "موجودی"])
@@ -166,14 +166,12 @@ def text_balance(message):
     if not get_user(user_id):
         bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
         return
-
     balance = get_balance(user_id)
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
     bot.reply_to(message, "موجودی شما:", reply_markup=markup)
 
 
-# ================== حساب کاربری ==================
 def build_account_view(user_id, display_name):
     user = get_user(user_id)
     _, username, diamonds, referred_by, ref_count = user
@@ -300,7 +298,6 @@ def handle_account_transfer_button(call):
     bot.register_next_step_handler(msg, ask_transfer_target, owner_id)
 
 
-# ================== افزودن الماس (فقط ادمین) ==================
 @bot.message_handler(func=lambda m: m.text and re.match(r"^افزودن\s+الماس\s+\d+$", m.text.strip()))
 def text_add_diamonds(message):
     if message.from_user.id not in ADMIN_IDS:
@@ -397,7 +394,6 @@ def text_transfer(message):
     bot.reply_to(message, msg)
 
 
-# ================== شرط‌بندی PvP ==================
 def start_bet_flow(message, amount):
     user_id = message.from_user.id
     if not get_user(user_id):
@@ -513,7 +509,6 @@ def handle_callback(call):
     clicker_id = call.from_user.id
     clicker_name = get_display_name(call.from_user)
 
-    # ---------- لغو شرط ----------
     if action == "cancel":
         if clicker_id != creator_id:
             bot.answer_callback_query(call.id, "فقط سازنده شرط می‌تونه لغو کنه.", show_alert=True)
@@ -527,7 +522,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, "شرط لغو شد.")
         return
 
-    # ---------- پیوستن به شرط ----------
     if action == "join":
         if clicker_id == creator_id:
             bot.answer_callback_query(call.id, "سازنده حق شرکت در شرط خودش رو نداره!", show_alert=True)
@@ -544,7 +538,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, "شما به شرط پیوستید. نتیجه اعلام شد.")
         return
 
-    # ---------- شرط با ربات ----------
     if action == "bot":
         if clicker_id != creator_id:
             bot.answer_callback_query(call.id, "فقط سازنده می‌تونه با ربات شرط ببنده.", show_alert=True)
@@ -554,7 +547,25 @@ def handle_callback(call):
         return
 
 
-# ================== اجرای بات ==================
+# ================== Webhook ==================
+@app.route("/", methods=["GET"])
+def health_check():
+    return "Bot is running!", 200
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    if request.headers.get("content-type") == "application/json":
+        json_str = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return "", 200
+    return "", 403
+
+
+# ================== اجرا ==================
 if __name__ == "__main__":
-    print("بات در حال اجراست...")
-    bot.polling(none_stop=True)
+    WEBHOOK_URL = f"https://your-bot-name.onrender.com/webhook"
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    app.run(host="0.0.0.0", port=8080)
