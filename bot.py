@@ -571,4 +571,4 @@ def handle_callback(call):
 
     if action == "bot":
         if clicker_id != creator_id:
-            bot.answer_callback_query(
+            bot.answer_callback_query(call.id, "متن", show_alert=True)
