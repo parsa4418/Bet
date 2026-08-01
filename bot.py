@@ -571,4 +571,34 @@ def handle_callback(call):
 
     if action == "bot":
         if clicker_id != creator_id:
-            bot.answer_callback_query(call.id, "متن", show_alert=True)
+            bot.answer_callback_query(call.id, "فقط سازنده می‌تونه با ربات شرط ببنده.", show_alert=True)
+            return
+        resolve_bet(bet_id, None, "ربات", is_bot=True)
+        bot.answer_callback_query(call.id, "شرط با ربات شروع شد. نتیجه اعلام شد.")
+        return
+
+
+# ================== Webhook ==================
+@app.route("/", methods=["GET"])
+def health_check():
+    return "Bot is running!", 200
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    if request.headers.get("content-type") == "application/json":
+        json_str = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return "", 200
+    return "", 403
+
+
+# ================== اجرا ==================
+if __name__ == "__main__":
+    WEBHOOK_URL = "https://bet-bot-e1c2.onrender.com/webhook"
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    # پورت را از محیط بگیر (برای Render) یا از ۵۰۰۰ استفاده کن
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
