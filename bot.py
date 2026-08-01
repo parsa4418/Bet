@@ -7,14 +7,15 @@
 import sqlite3
 import random
 import re
+import os
 from flask import Flask, request
 import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAEySG8PvDBBEq03EspLuCteDsW0muF3oUk"
+BOT_TOKEN = "8666764154:AAEySG8PvDBBEq03EspLuCteDsW0muF3oUk"  # توکن خود را وارد کنید
 ADMIN_IDS = [8904869158]
-START_DIAMONDS = 50
+START_DIAMONDS = 10000  # تغییر داده شد به ۱۰۰۰۰
 REFERRAL_BONUS = 25
 TAX_RATE = 0.10
 TAX_RECEIVER_ID = ADMIN_IDS[0]
@@ -122,6 +123,17 @@ def set_bet_status(bet_id, status):
     conn.close()
 
 
+# ================== تابع رتبه‌بندی (جدید) ==================
+def get_top_users(limit=10):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT user_id, username, diamonds FROM users ORDER BY diamonds DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    return rows
+
+
 # ================== هندلرها ==================
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -198,6 +210,22 @@ def cmd_account(message):
     bot.reply_to(message, text, reply_markup=markup)
 
 
+# ================== هندلر رتبه‌بندی (جدید) ==================
+@bot.message_handler(commands=["rank", "رتبه‌بندی"])
+def cmd_rank(message):
+    top = get_top_users()
+    if not top:
+        bot.reply_to(message, "هنوز کاربری ثبت‌نام نکرده.")
+        return
+
+    text = "🏆 **رتبه‌بندی بر اساس الماس**\n\n"
+    for idx, (user_id, username, diamonds) in enumerate(top, 1):
+        name = f"@{username}" if username else f"کاربر {user_id}"
+        text += f"{idx}. {name} — 💎 {diamonds}\n"
+
+    bot.reply_to(message, text, parse_mode="Markdown")
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("showaccount|"))
 def handle_show_account(call):
     owner_id = int(call.data.split("|")[1])
@@ -246,7 +274,9 @@ def handle_show_help(call):
         "👤 حساب کاربری کامل + دکمه انتقال:\n"
         "بزن /account\n\n"
         "👥 لینک رفرال برای دعوت دوستات:\n"
-        "بزن /start و روی «زیرمجموعه‌گیری» بزن"
+        "بزن /start و روی «زیرمجموعه‌گیری» بزن\n\n"
+        "🏆 رتبه‌بندی برترین‌ها:\n"
+        "بزن /rank"
     )
     bot.send_message(call.message.chat.id, text)
 
@@ -541,32 +571,4 @@ def handle_callback(call):
 
     if action == "bot":
         if clicker_id != creator_id:
-            bot.answer_callback_query(call.id, "فقط سازنده می‌تونه با ربات شرط ببنده.", show_alert=True)
-            return
-        resolve_bet(bet_id, None, "ربات", is_bot=True)
-        bot.answer_callback_query(call.id, "شرط با ربات شروع شد. نتیجه اعلام شد.")
-        return
-
-
-# ================== Webhook ==================
-@app.route("/", methods=["GET"])
-def health_check():
-    return "Bot is running!", 200
-
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    if request.headers.get("content-type") == "application/json":
-        json_str = request.get_data().decode("utf-8")
-        update = telebot.types.Update.de_json(json_str)
-        bot.process_new_updates([update])
-        return "", 200
-    return "", 403
-
-
-# ================== اجرا ==================
-if __name__ == "__main__":
-    WEBHOOK_URL = "https://bet-bot-e1c2.onrender.com/webhook"
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    app.run(host="0.0.0.0", port=8080)
+            bot.answer_callback_query(
