@@ -244,7 +244,7 @@ def cmd_rank(message):
 
     text = "🏆 **رتبه‌بندی بر اساس الماس**\n\n"
     for idx, (user_id, username, diamonds) in enumerate(top, 1):
-        name = f"{username}" if username else f"کاربر {user_id}"
+        name = f"@{username}" if username else f"کاربر {user_id}"
         text += f"{idx}. {name} — 💎 {diamonds}\n"
 
     bot.reply_to(message, text, parse_mode="Markdown")
