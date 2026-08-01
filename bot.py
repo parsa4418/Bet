@@ -242,17 +242,16 @@ def cmd_rank(message):
         bot.reply_to(message, "هنوز کاربری ثبت‌نام نکرده.")
         return
 
-    text = "🏆 **رتبه‌بندی بر اساس الماس**\n\n"
+    text = "🏆 رتبه‌بندی بر اساس الماس\n\n"  # پررنگ رو برداشتم
     for idx, (user_id, username, diamonds) in enumerate(top, 1):
         name = f"@{username}" if username else f"کاربر {user_id}"
         text += f"{idx}. {name} — 💎 {diamonds}\n"
 
-    bot.reply_to(message, text, parse_mode="Markdown")
+    bot.reply_to(message, text)  # parse_mode رو حذف کردم
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip() in ["رنک", "رتبه بندی"])
 def text_rank(message):
     cmd_rank(message)
-
 
 # ================== سایر کالبک‌ها و توابع ==================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("showaccount|"))
