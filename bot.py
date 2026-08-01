@@ -226,6 +226,15 @@ def cmd_account(message):
 
 
 # ================== رتبه‌بندی ==================
+def get_top_users(limit=10):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT user_id, username, diamonds FROM users ORDER BY diamonds DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    return rows
+
 @bot.message_handler(commands=["rank", "رتبه‌بندی"])
 def cmd_rank(message):
     top = get_top_users()
@@ -240,8 +249,7 @@ def cmd_rank(message):
 
     bot.reply_to(message, text, parse_mode="Markdown")
 
-
-@bot.message_handler(func=lambda m: m.text and m.text.strip() == "رنک")
+@bot.message_handler(func=lambda m: m.text and m.text.strip() in ["رنک", "رتبه بندی"])
 def text_rank(message):
     cmd_rank(message)
 
