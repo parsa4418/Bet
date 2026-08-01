@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-بات شرط‌بندی کامل (الماس + شرط دو نفره + گردونه شانس Slot)
-مناسب برای Render (Webhook)
+بات شرط‌بندی الماس با Webhook (مناسب برای Render رایگان)
+آدرس ربات: https://bet-bot-e1c2.onrender.com
 """
 
 import sqlite3
 import random
 import re
 import os
-import time
 from flask import Flask, request
 import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAEWwh9TYrypERrhvz5Smdwdb8PqtB0WAUQ"  # توکن خود را اینجا وارد کنید
-ADMIN_IDS = [8904869158]       # آیدی ادمین‌ها
+BOT_TOKEN = "توکن_ربات_خودت"  # توکن خود را وارد کنید
+ADMIN_IDS = [8904869158]
 START_DIAMONDS = 10000
 REFERRAL_BONUS = 50000
 TAX_RATE = 0.10
@@ -29,7 +28,6 @@ DB_PATH = "diamonds.db"
 # ================== دیتابیس ==================
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
-    # جدول کاربران
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -39,7 +37,6 @@ def get_conn():
             ref_count INTEGER DEFAULT 0
         )
     """)
-    # جدول شرط‌های دو نفره
     conn.execute("""
         CREATE TABLE IF NOT EXISTS bets (
             bet_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,19 +48,9 @@ def get_conn():
             status TEXT DEFAULT 'pending'
         )
     """)
-    # جدول اسلات (گردونه شانس) برای مدیریت تایمر ۶۰ ثانیه
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS slot_games (
-            user_id INTEGER PRIMARY KEY,
-            bet_amount INTEGER,
-            expire_time REAL,
-            status TEXT DEFAULT 'active'
-        )
-    """)
     return conn
 
 
-# ================== توابع پایه کاربران ==================
 def get_user(user_id):
     conn = get_conn()
     row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -109,7 +96,6 @@ def get_display_name(user):
     return user.username and f"@{user.username}" or user.first_name
 
 
-# ================== توابع شرط‌های دو نفره (قدیمی) ==================
 def create_bet(creator_id, creator_name, amount, chat_id, message_id):
     conn = get_conn()
     cur = conn.execute(
@@ -146,7 +132,7 @@ def get_top_users(limit=10):
     return rows
 
 
-# ================== هندلر استارت و منو ==================
+# ================== هندلرها ==================
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
     user_id = message.from_user.id
@@ -180,7 +166,7 @@ def cmd_start(message):
     bot.send_message(message.chat.id, caption, reply_markup=markup)
 
 
-# ================== موجودی ==================
+# ================== موجودی (با دکمه) ==================
 @bot.message_handler(commands=["balance", "موجودی"])
 def cmd_balance(message):
     show_balance(message)
@@ -229,6 +215,16 @@ def build_account_view(user_id, display_name):
     return text, markup
 
 
+@bot.message_handler(commands=["account", "حساب"])
+def cmd_account(message):
+    user_id = message.from_user.id
+    if not get_user(user_id):
+        bot.reply_to(message, "اول /start بزن.")
+        return
+    text, markup = build_account_view(user_id, get_display_name(message.from_user))
+    bot.reply_to(message, text, reply_markup=markup)
+
+
 # ================== رتبه‌بندی ==================
 @bot.message_handler(commands=["rank", "رتبه‌بندی"])
 def cmd_rank(message):
@@ -245,136 +241,9 @@ def cmd_rank(message):
     bot.reply_to(message, text, parse_mode="Markdown")
 
 
-# ================== گردونه شانس (جدید - شبیه تصویر شما) ==================
-
-# منطق تولید ۳ کاراکتر و محاسبه ضریب
-def slot_spin():
-    items = ['🍒', '🍋', '🍇', '🔔', '7️⃣']
-    result = [random.choice(items) for _ in range(3)]
-    
-    # محاسبه ضریب
-    if result[0] == result[1] == result[2]:
-        if result[0] == '7️⃣':
-            multiplier = 5.0  # جکپات
-        elif result[0] == '🍒':
-            multiplier = 3.0
-        else:
-            multiplier = 2.0
-    elif result[0] == result[1] or result[1] == result[2] or result[0] == result[2]:
-        multiplier = 1.0  # برگشت مبلغ
-    else:
-        multiplier = 0.0  # باخت کامل
-    return result, multiplier
-
-
-@bot.message_handler(commands=["slot", "اسلات"])
-def cmd_slot(message):
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    
-    if not get_user(user_id):
-        bot.reply_to(message, "اول باید /start رو بزنی.")
-        return
-
-    parts = message.text.split()
-    if len(parts) != 2 or not parts[1].isdigit():
-        bot.reply_to(message, "فرمت: /slot <مبلغ>\nمثال: /slot 10000")
-        return
-    
-    amount = int(parts[1])
-    if amount <= 0:
-        bot.reply_to(message, "مبلغ باید بزرگتر از صفر باشه.")
-        return
-    
-    balance = get_balance(user_id)
-    if balance < amount:
-        bot.reply_to(message, f"موجودی کافی ندارید! موجودی شما: {balance} 💎")
-        return
-
-    # چک کردن اینکه کاربر توی بازی دیگری نباشد
-    conn = get_conn()
-    active = conn.execute("SELECT status FROM slot_games WHERE user_id=?", (user_id,)).fetchone()
-    if active and active[0] == 'active':
-        conn.close()
-        bot.reply_to(message, "شما هنوز بازی قبلی رو تموم نکردید! لطفاً ایموجی 🎰 رو بفرستید.")
-        return
-
-    # کسر الماس و ثبت در دیتابیس با زمان انقضا (۶۰ ثانیه)
-    update_diamonds(user_id, -amount)
-    expire_time = time.time() + 60
-    
-    conn.execute("REPLACE INTO slot_games (user_id, bet_amount, expire_time, status) VALUES (?,?,?,?)",
-                 (user_id, amount, expire_time, 'active'))
-    conn.commit()
-    conn.close()
-
-    # ارسال پنل اسلات (مثل تصویر اول شما)
-    sent_msg = bot.send_message(
-        chat_id,
-        f"🎰 کازینو | گردونه شانس 🎰\n\n"
-        f"💰 مبلغ ورودی: {amount}\n\n"
-        f"👤 {get_display_name(message.from_user)}: امتیاز...\n\n"
-        f"❗️ لطفاً ایموجی '🎰' را در پاسخ همین پیام ارسال کنید\n\n"
-        f"⏳ فقط ۶۰ ثانیه فرصت دارید... (الماس شما کسر شد!)"
-    )
-
-
-@bot.message_handler(func=lambda message: message.text == '🎰')
-def handle_slot_emoji(message):
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-
-    conn = get_conn()
-    row = conn.execute("SELECT bet_amount, expire_time, status FROM slot_games WHERE user_id=?", (user_id,)).fetchone()
-    
-    if not row:
-        conn.close()
-        return # کاربر بازی‌ای شروع نکرده
-    
-    bet_amount, expire_time, status = row
-
-    if status != 'active':
-        bot.reply_to(message, "این بازی قبلاً تموم شده یا لغو شده.")
-        conn.close()
-        return
-
-    # بررسی زمان (تایمر ۶۰ ثانیه‌ای)
-    if time.time() > expire_time:
-        conn.execute("UPDATE slot_games SET status='expired' WHERE user_id=?", (user_id,))
-        conn.commit()
-        conn.close()
-        bot.reply_to(message, "⏰ متاسفانه زمان شما به پایان رسید! الماس شما سوخت.")
-        return
-
-    # ** انجام بازی اسلات **
-    result, multiplier = slot_spin()
-    winnings = int(bet_amount * multiplier)
-    
-    # به‌روزرسانی موجودی کاربر (بر اساس ضریب)
-    if multiplier > 0:
-        update_diamonds(user_id, winnings)
-        
-    # بستن بازی در دیتابیس
-    conn.execute("UPDATE slot_games SET status='finished' WHERE user_id=?", (user_id,))
-    conn.commit()
-    conn.close()
-
-    # ساخت متن نتیجه (مثل تصویر دوم شما)
-    if multiplier == 0.0:
-        result_text = f"شما باختید! ({multiplier}x)\nمبلغ دریافتی: ۰"
-    elif multiplier == 1.0:
-        result_text = f"مساوی کردید! برگشت مبلغ ({multiplier}x)\nمبلغ دریافتی: {winnings}"
-    else:
-        result_text = f"🎉 برنده شدید! ({multiplier}x)\nمبلغ دریافتی: {winnings}"
-
-    bot.send_message(
-        chat_id,
-        f"🎰 کازینو | گردونه شانس 🎰\n\n"
-        f"💰 مبلغ ورودی: {bet_amount}\n"
-        f"({multiplier}x) 🏆 مبلغ دریافتی: {winnings}\n\n"
-        f"👤 {get_display_name(message.from_user)}: امتیاز...\n"
-        f"{' '.join(result)} | {result_text}"
-    )
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "رنک")
+def text_rank(message):
+    cmd_rank(message)
 
 
 # ================== سایر کالبک‌ها و توابع ==================
@@ -417,28 +286,24 @@ def handle_show_help(call):
         "بنویس: موجودی\n\n"
         "💎 دیدن موجودی دیگران:\n"
         "روی پیام شخص مورد نظر ریپلای کن و بنویس: موجودی\n\n"
-        "💸 انتقال الماس:\n"
-        "روی پیام همون شخص ریپلای کن و بنویس:\n"
+        "💸 انتقال الماس به یه نفر دیگه:\n"
+        "روی پیام همون شخص توی گروه ریپلای کن و بنویس:\n"
         "انتقال الماس <مقدار>\n"
         "مثال: انتقال الماس 200\n\n"
-        "🎲 شرط‌بندی دو نفره:\n"
-        "بنویس: /bet <مقدار>\n"
-        "مثال: /bet 20\n\n"
-        "🎰 گردونه شانس (اسلات):\n"
-        "بنویس: /slot <مقدار>\n"
-        "مثال: /slot 10000\n"
-        "سپس در ۶۰ ثانیه ایموجی 🎰 رو بفرست.\n\n"
-        "👤 حساب کاربری کامل:\n"
+        "🎲 شرط‌بندی با یه نفر دیگه:\n"
+        "بنویس: شرط بندی <مقدار>\n"
+        "مثال: شرط بندی 20\n"
+        "بعد از زیر پیام دکمه‌ها استفاده کن (لغو شرط / پیوستن / شرط با ربات)\n\n"
+        "👤 حساب کاربری کامل + دکمه انتقال:\n"
         "بزن /account\n\n"
-        "👥 لینک رفرال:\n"
+        "👥 لینک رفرال برای دعوت دوستات:\n"
         "بزن /start و روی «زیرمجموعه‌گیری» بزن\n\n"
-        "🏆 رتبه‌بندی:\n"
+        "🏆 رتبه‌بندی برترین‌ها:\n"
         "بزن /rank یا بنویس رنک"
     )
     bot.send_message(call.message.chat.id, text)
 
 
-# ================== انتقال الماس و شرط‌بندی دو نفره ==================
 def ask_transfer_target(message, owner_id):
     if message.from_user.id != owner_id:
         bot.register_next_step_handler(message, ask_transfer_target, owner_id)
@@ -454,7 +319,10 @@ def ask_transfer_target(message, owner_id):
     ok, result_msg = perform_transfer(owner_id, target_id, amount)
 
     if not ok and "نزده" in result_msg:
-        result_msg += ("\n\n⚠️ کاربر مقصد باید حتماً یه‌بار توی پیوی خودِ بات /start رو بزنه.")
+        result_msg += (
+            "\n\n⚠️ برای اینکه بات بتونه کاربری رو بشناسه، اون شخص باید حتماً یه‌بار "
+            "توی پیوی خودِ بات دستور /start رو بزنه. فقط عضو گروه بودن کافی نیست."
+        )
     bot.reply_to(message, result_msg)
 
     if ok:
@@ -473,10 +341,76 @@ def handle_account_transfer_button(call):
     bot.answer_callback_query(call.id)
     msg = bot.send_message(
         call.message.chat.id,
-        "🔹 روش آسان:\nتوی گروه، روی پیام مقصد ریپلای کن و بنویس:\nانتقال الماس <مقدار>\n\n"
-        "🔹 یا از همینجا:\n<آیدی عددی مقصد> <مقدار>\nمثال: 123456789 20"
+        "🔹 روش ساده‌تر (توصیه می‌شه):\n"
+        "توی گروه، روی پیام کاربر مقصد ریپلای کن و بنویس:\n"
+        "انتقال الماس <مقدار>\n(مثال: انتقال الماس 200)\n\n"
+        "🔹 یا از همینجا:\n"
+        "آیدی عددی مقصد و مقدار الماس رو اینطوری بفرست:\n<آیدی عددی> <مقدار>\nمثال: 123456789 20\n\n"
+        "⚠️ نکته: کاربر مقصد باید حتماً یه‌بار خودش توی پیوی بات /start زده باشه، "
+        "وگرنه بات نمی‌تونه بشناستش و همیشه خطای «استارت نزده» می‌ده."
     )
     bot.register_next_step_handler(msg, ask_transfer_target, owner_id)
+
+
+@bot.message_handler(func=lambda m: m.text and re.match(r"^افزودن\s+الماس\s+\d+$", m.text.strip()))
+def text_add_diamonds(message):
+    if message.from_user.id not in ADMIN_IDS:
+        bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس اضافه کنه.")
+        return
+    if not message.reply_to_message:
+        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nافزودن الماس <مقدار>\nمثال: افزودن الماس 50")
+        return
+
+    amount = int(re.search(r"\d+", message.text).group())
+    if amount <= 0:
+        bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    if not get_user(target_id):
+        bot.reply_to(message, "این کاربر هنوز /start نزده.")
+        return
+
+    update_diamonds(target_id, amount)
+    bot.reply_to(message, f"✅ {amount} 💎 به کاربر {target_id} اضافه شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
+
+
+@bot.message_handler(func=lambda m: m.text and re.match(r"^کم\s*کردن\s+الماس\s+\d+$", m.text.strip()))
+def text_remove_diamonds(message):
+    if message.from_user.id not in ADMIN_IDS:
+        bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس کم کنه.")
+        return
+    if not message.reply_to_message:
+        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nکم کردن الماس <مقدار>\nمثال: کم کردن الماس 50")
+        return
+
+    amount = int(re.search(r"\d+", message.text).group())
+    if amount <= 0:
+        bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    if not get_user(target_id):
+        bot.reply_to(message, "این کاربر هنوز /start نزده.")
+        return
+
+    deduct = min(amount, get_balance(target_id))
+    update_diamonds(target_id, -deduct)
+    bot.reply_to(message, f"✅ {deduct} 💎 از کاربر {target_id} کم شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
+
+
+def perform_transfer(sender_id, target_id, amount):
+    if amount <= 0:
+        return False, "مقدار باید بزرگتر از صفر باشه."
+    if target_id == sender_id:
+        return False, "نمیشه به خودت انتقال بدی."
+    if not get_user(target_id):
+        return False, "کاربر مقصد هنوز /start نزده."
+    if get_balance(sender_id) < amount:
+        return False, "موجودی کافی نداری."
+    update_diamonds(sender_id, -amount)
+    update_diamonds(target_id, amount)
+    return True, f"✅ {amount} 💎 به کاربر {target_id} منتقل شد.\nموجودی جدید تو: {get_balance(sender_id)} 💎"
 
 
 @bot.message_handler(commands=["transfer"])
@@ -505,27 +439,13 @@ def text_transfer(message):
         bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
         return
     if not message.reply_to_message:
-        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nانتقال الماس <مقدار>")
+        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nانتقال الماس <مقدار>\nمثال: انتقال الماس 200")
         return
 
     amount = int(re.search(r"\d+", message.text).group())
     target_id = message.reply_to_message.from_user.id
     ok, msg = perform_transfer(sender_id, target_id, amount)
     bot.reply_to(message, msg)
-
-
-def perform_transfer(sender_id, target_id, amount):
-    if amount <= 0:
-        return False, "مقدار باید بزرگتر از صفر باشه."
-    if target_id == sender_id:
-        return False, "نمیشه به خودت انتقال بدی."
-    if not get_user(target_id):
-        return False, "کاربر مقصد هنوز /start نزده."
-    if get_balance(sender_id) < amount:
-        return False, "موجودی کافی نداری."
-    update_diamonds(sender_id, -amount)
-    update_diamonds(target_id, amount)
-    return True, f"✅ {amount} 💎 به کاربر {target_id} منتقل شد.\nموجودی جدید تو: {get_balance(sender_id)} 💎"
 
 
 def start_bet_flow(message, amount):
@@ -544,6 +464,8 @@ def start_bet_flow(message, amount):
     creator_name = get_display_name(message.from_user)
     update_diamonds(user_id, -amount)
 
+    sent = bot.send_message(
+        message.chat.id,
     sent = bot.send_message(
         message.chat.id,
         f"🎲 شرط جدید شروع شد!\n"
@@ -679,54 +601,6 @@ def handle_callback(call):
         resolve_bet(bet_id, None, "ربات", is_bot=True)
         bot.answer_callback_query(call.id, "شرط با ربات شروع شد. نتیجه اعلام شد.")
         return
-
-
-# ================== ادمین‌ها ==================
-@bot.message_handler(func=lambda m: m.text and re.match(r"^افزودن\s+الماس\s+\d+$", m.text.strip()))
-def text_add_diamonds(message):
-    if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس اضافه کنه.")
-        return
-    if not message.reply_to_message:
-        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nافزودن الماس <مقدار>")
-        return
-
-    amount = int(re.search(r"\d+", message.text).group())
-    if amount <= 0:
-        bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
-        return
-
-    target_id = message.reply_to_message.from_user.id
-    if not get_user(target_id):
-        bot.reply_to(message, "این کاربر هنوز /start نزده.")
-        return
-
-    update_diamonds(target_id, amount)
-    bot.reply_to(message, f"✅ {amount} 💎 به کاربر {target_id} اضافه شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
-
-
-@bot.message_handler(func=lambda m: m.text and re.match(r"^کم\s*کردن\s+الماس\s+\d+$", m.text.strip()))
-def text_remove_diamonds(message):
-    if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس کم کنه.")
-        return
-    if not message.reply_to_message:
-        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nکم کردن الماس <مقدار>")
-        return
-
-    amount = int(re.search(r"\d+", message.text).group())
-    if amount <= 0:
-        bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
-        return
-
-    target_id = message.reply_to_message.from_user.id
-    if not get_user(target_id):
-        bot.reply_to(message, "این کاربر هنوز /start نزده.")
-        return
-
-    deduct = min(amount, get_balance(target_id))
-    update_diamonds(target_id, -deduct)
-    bot.reply_to(message, f"✅ {deduct} 💎 از کاربر {target_id} کم شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
 
 
 # ================== Webhook ==================
