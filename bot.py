@@ -689,6 +689,7 @@ def casino_game_select(call):
         types.InlineKeyboardButton(f"💎 {amt}", callback_data=f"cbet|{game_key}|{amt}")
         for amt in CASINO_BET_PRESETS[3:]
     ])
+    markup.row(types.InlineKeyboardButton("✏️ مبلغ دلخواه", callback_data=f"ccustom|{game_key}"))
     markup.row(types.InlineKeyboardButton("🔙 بازگشت", callback_data="cback"))
 
     bot.edit_message_text(
@@ -759,6 +760,67 @@ def casino_bet_select(call):
             "chat_id": call.message.chat.id,
             "player1": {"id": user.id, "name": get_display_name(user)},
             "player2": None,
+            "score1": None,
+            "score2": None,
+        }
+
+    threading.Timer(JOIN_TIMEOUT_SECONDS, check_casino_timeout, args=[msg_id]).start()
+
+
+# ================== مبلغ دلخواه (با تایپ عدد) ==================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ccustom|"))
+def casino_custom_amount_prompt(call):
+    game_key = call.data.split("|")[1]
+    if not get_user(call.from_user.id):
+        bot.answer_callback_query(call.id, "اول /start بزن.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id, "💎 مبلغ شرط رو به عدد بفرست (مثلاً 250):")
+    bot.register_next_step_handler(msg, casino_custom_amount_step, game_key, call.from_user.id)
+
+
+def casino_custom_amount_step(message, game_key, expected_user_id):
+    if message.from_user.id != expected_user_id:
+        return  # پیام افراد دیگه نادیده گرفته میشه
+
+    if not message.text or not message.text.strip().isdigit():
+        msg = bot.reply_to(message, "لطفاً فقط عدد بفرست. مثال: 250")
+        bot.register_next_step_handler(msg, casino_custom_amount_step, game_key, expected_user_id)
+        return
+
+    amount = int(message.text.strip())
+    if amount <= 0:
+        msg = bot.reply_to(message, "مبلغ باید بزرگتر از صفر باشه. دوباره بفرست:")
+        bot.register_next_step_handler(msg, casino_custom_amount_step, game_key, expected_user_id)
+        return
+
+    user = message.from_user
+    if get_balance(user.id) < amount:
+        bot.reply_to(message, "💎 موجودی الماس شما کافی نیست!")
+        return
+
+    update_diamonds(user.id, -amount)
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"))
+    text = (
+        f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]}\n"
+        f"💎 مبلغ شرط: {amount}\n\n"
+        f"👤 بازیکن اول: {get_display_name(user)}\n"
+        f"⏳ منتظر بازیکن دوم... (فرصت: {JOIN_TIMEOUT_SECONDS} ثانیه)"
+    )
+    sent = bot.send_message(message.chat.id, text, reply_markup=markup)
+    msg_id = sent.message_id
+
+    with _casino_lock:
+        active_casino_games[msg_id] = {
+            "game": game_key,
+            "bet": amount,
+            "chat_id": message.chat.id,
+            "player1": {"id": user.id, "name": get_display_name(user)},
+            "player2": None,
+            "score1": None,
+            "score2": None,
         }
 
     threading.Timer(JOIN_TIMEOUT_SECONDS, check_casino_timeout, args=[msg_id]).start()
@@ -791,50 +853,75 @@ def casino_join(call):
         update_diamonds(user.id, -game["bet"])  # قفل کردن مبلغ نفر دوم
 
     bot.answer_callback_query(call.id)
+    emoji = CASINO_GAMES[game["game"]]
     bot.edit_message_text(
-        f"{CASINO_GAMES[game['game']]} بازی شروع شد!\n"
+        f"{emoji} بازی شروع شد!\n"
         f"⚔️ {game['player1']['name']} در برابر {game['player2']['name']}\n"
         f"💎 مبلغ: {game['bet']}\n\n"
-        f"🎲 در حال انداختن...",
+        f"🎲 حالا هر دو بازیکن باید خودشون {emoji} رو همینجا تو چت بفرستن!",
         chat_id=game["chat_id"], message_id=msg_id, reply_markup=None
     )
 
-    run_casino_game(msg_id)
+
+# ================== دریافت ایموجی‌هایی که خود بازیکن‌ها می‌فرستن ==================
+@bot.message_handler(content_types=["dice"])
+def handle_dice_throw(message):
+    to_finalize = None
+    with _casino_lock:
+        for msg_id, game in active_casino_games.items():
+            if game["chat_id"] != message.chat.id or game["player2"] is None:
+                continue
+            emoji = CASINO_GAMES[game["game"]]
+            if message.dice.emoji != emoji:
+                continue
+
+            user_id = message.from_user.id
+            if user_id == game["player1"]["id"] and game["score1"] is None:
+                game["score1"] = message.dice.value
+            elif user_id == game["player2"]["id"] and game["score2"] is None:
+                game["score2"] = message.dice.value
+            else:
+                continue
+
+            if game["score1"] is not None and game["score2"] is not None:
+                to_finalize = msg_id
+            break
+
+    if to_finalize:
+        finalize_casino_game(to_finalize)
 
 
-def run_casino_game(msg_id):
-    game = active_casino_games.get(msg_id)
+def finalize_casino_game(msg_id):
+    with _casino_lock:
+        game = active_casino_games.pop(msg_id, None)
     if not game:
         return
 
     emoji = CASINO_GAMES[game["game"]]
     chat_id = game["chat_id"]
+    player1, player2 = game["player1"], game["player2"]
+    score1, score2 = game["score1"], game["score2"]
+    bet = game["bet"]
 
-    dice1 = bot.send_dice(chat_id, emoji=emoji)
-    dice2 = bot.send_dice(chat_id, emoji=emoji)
-
-    score1 = dice1.dice.value
-    score2 = dice2.dice.value
-
-    time.sleep(4)  # صبر برای تموم شدن انیمیشن
+    time.sleep(2)  # کمی صبر برای تموم شدن انیمیشن آخرین تاس
 
     if score1 == score2:
-        update_diamonds(game["player1"]["id"], game["bet"])
-        update_diamonds(game["player2"]["id"], game["bet"])
+        update_diamonds(player1["id"], bet)
+        update_diamonds(player2["id"], bet)
         result_text = (
             f"{emoji} شرط تموم شد!\n"
-            f"💎 مبلغ: {game['bet']}\n"
-            f"⚔️ {game['player1']['name']} در برابر {game['player2']['name']}\n\n"
+            f"💎 مبلغ: {bet}\n"
+            f"⚔️ {player1['name']} در برابر {player2['name']}\n\n"
             f"🤝 مساوی شد! (امتیاز: {score1} - {score2})\n"
             f"💰 مبلغ به هر دو نفر برگشت داده شد."
         )
     else:
         if score1 > score2:
-            winner, loser, w_score, l_score = game["player1"], game["player2"], score1, score2
+            winner, loser, w_score, l_score = player1, player2, score1, score2
         else:
-            winner, loser, w_score, l_score = game["player2"], game["player1"], score2, score1
+            winner, loser, w_score, l_score = player2, player1, score2, score1
 
-        total_pot = game["bet"] * 2
+        total_pot = bet * 2
         tax = int(total_pot * TAX_RATE)
         final_amount = total_pot - tax
 
@@ -844,8 +931,8 @@ def run_casino_game(msg_id):
 
         result_text = (
             f"{emoji} شرط تموم شد!\n"
-            f"💎 مبلغ: {game['bet']}\n"
-            f"⚔️ {game['player1']['name']} در برابر {game['player2']['name']}\n\n"
+            f"💎 مبلغ: {bet}\n"
+            f"⚔️ {player1['name']} در برابر {player2['name']}\n\n"
             f"🏆 برنده: {winner['name']} (امتیاز: {w_score})\n"
             f"😢 بازنده: {loser['name']} (امتیاز: {l_score})\n\n"
             f"💰 مبلغ برد: {total_pot}\n"
@@ -853,10 +940,10 @@ def run_casino_game(msg_id):
             f"✅ مبلغ نهایی برنده: {final_amount}"
         )
 
-    bot.edit_message_text(result_text, chat_id=chat_id, message_id=msg_id)
-
-    with _casino_lock:
-        active_casino_games.pop(msg_id, None)
+    try:
+        bot.edit_message_text(result_text, chat_id=chat_id, message_id=msg_id)
+    except Exception:
+        bot.send_message(chat_id, result_text)
 
 
 # ================== Webhook ==================
