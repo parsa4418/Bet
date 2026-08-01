@@ -13,7 +13,7 @@ import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAH74Gv-7llcxRki9OpSp1CUiQndciLpYIo"  # توکن خود را وارد کنید
+BOT_TOKEN = "توکن_ربات_خودت"  # توکن خود را وارد کنید
 ADMIN_IDS = [8904869158]
 START_DIAMONDS = 10000
 REFERRAL_BONUS = 50000
@@ -166,38 +166,21 @@ def cmd_start(message):
     bot.send_message(message.chat.id, caption, reply_markup=markup)
 
 
+# ================== موجودی (با دکمه) ==================
 @bot.message_handler(commands=["balance", "موجودی"])
 def cmd_balance(message):
-    user_id = message.from_user.id
-    if not get_user(user_id):
-        bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
-        return
-    
-    # اگر روی پیام شخصی ریپلای کرده
-    if message.reply_to_message:
-        target_id = message.reply_to_message.from_user.id
-        if not get_user(target_id):
-            bot.reply_to(message, "این کاربر هنوز /start نزده، نمی‌تونم موجودیش رو ببینم.")
-            return
-        target_name = get_display_name(message.reply_to_message.from_user)
-        balance = get_balance(target_id)
-        bot.reply_to(message, f"💎 موجودی الماس {target_name}: {balance}")
-    else:
-        balance = get_balance(user_id)
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
-        bot.reply_to(message, "موجودی شما:", reply_markup=markup)
+    show_balance(message)
 
-
-# ================== هندلر جدید برای متن ساده "موجودی" با قابلیت ریپلای ==================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "موجودی")
 def text_balance(message):
+    show_balance(message)
+
+def show_balance(message):
     user_id = message.from_user.id
     if not get_user(user_id):
         bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
         return
-    
-    # اگر روی پیام شخصی ریپلای کرده
+
     if message.reply_to_message:
         target_id = message.reply_to_message.from_user.id
         if not get_user(target_id):
@@ -205,12 +188,16 @@ def text_balance(message):
             return
         target_name = get_display_name(message.reply_to_message.from_user)
         balance = get_balance(target_id)
-        bot.reply_to(message, f"💎 موجودی الماس {target_name}: {balance}")
-    else:
-        balance = get_balance(user_id)
+        text = f"💎 موجودی الماس {target_name}"
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
-        bot.reply_to(message, "موجودی شما:", reply_markup=markup)
+        bot.reply_to(message, text, reply_markup=markup)
+    else:
+        balance = get_balance(user_id)
+        text = "💎 موجودی شما"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
+        bot.reply_to(message, text, reply_markup=markup)
 
 
 def build_account_view(user_id, display_name):
@@ -238,7 +225,7 @@ def cmd_account(message):
     bot.reply_to(message, text, reply_markup=markup)
 
 
-# ================== هندلر رتبه‌بندی ==================
+# ================== رتبه‌بندی ==================
 @bot.message_handler(commands=["rank", "رتبه‌بندی"])
 def cmd_rank(message):
     top = get_top_users()
@@ -254,12 +241,12 @@ def cmd_rank(message):
     bot.reply_to(message, text, parse_mode="Markdown")
 
 
-# ================== هندلر جدید برای کلمه "رنک" ==================
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "رنک")
 def text_rank(message):
     cmd_rank(message)
 
 
+# ================== سایر کالبک‌ها و توابع ==================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("showaccount|"))
 def handle_show_account(call):
     owner_id = int(call.data.split("|")[1])
