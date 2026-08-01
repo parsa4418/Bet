@@ -13,7 +13,7 @@ import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAEWwh9TYrypERrhvz5Smdwdb8PqtB0WAUQ"  # توکن خود را وارد کنید
+BOT_TOKEN = "توکن_ربات_خودت"  # توکن خود را وارد کنید
 ADMIN_IDS = [8904869158]
 START_DIAMONDS = 10000
 REFERRAL_BONUS = 50000
@@ -469,18 +469,13 @@ def start_bet_flow(message, amount):
         f"🎲 شرط جدید شروع شد!\n"
         f"👤 سازنده: {creator_name}\n"
         f"💎 مبلغ شرط: {amount}\n\n"
-        f"یه نفر باید بپیونده تا شرط اجرا بشه."
+        f"یه نفر باید بپیونده تا شرط اجرا بشه.",
     )
 
     bet_id = create_bet(user_id, creator_name, amount, message.chat.id, sent.message_id)
 
     markup = types.InlineKeyboardMarkup()
     markup.row(
-        types.InlineKeyboardButton("❌ لغو شرط", callback_data=f"cancel|{bet_id}"),
-        types.InlineKeyboardButton("✅ پیوستن به شرط", callback_data=f"join|{bet_id}"),
-    )
-    markup.row(types.InlineKeyboardButton("🤖 شرط با ربات", callback_data=f"bot|{bet_id}"))
-    bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=sent.message_id, reply_markup=markup)
         types.InlineKeyboardButton("❌ لغو شرط", callback_data=f"cancel|{bet_id}"),
         types.InlineKeyboardButton("✅ پیوستن به شرط", callback_data=f"join|{bet_id}"),
     )
