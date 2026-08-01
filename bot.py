@@ -466,17 +466,21 @@ def start_bet_flow(message, amount):
 
     sent = bot.send_message(
         message.chat.id,
-    sent = bot.send_message(
-        message.chat.id,
         f"🎲 شرط جدید شروع شد!\n"
         f"👤 سازنده: {creator_name}\n"
         f"💎 مبلغ شرط: {amount}\n\n"
-        f"یه نفر باید بپیونده تا شرط اجرا بشه.",)
+        f"یه نفر باید بپیونده تا شرط اجرا بشه."
+    )
 
     bet_id = create_bet(user_id, creator_name, amount, message.chat.id, sent.message_id)
 
     markup = types.InlineKeyboardMarkup()
     markup.row(
+        types.InlineKeyboardButton("❌ لغو شرط", callback_data=f"cancel|{bet_id}"),
+        types.InlineKeyboardButton("✅ پیوستن به شرط", callback_data=f"join|{bet_id}"),
+    )
+    markup.row(types.InlineKeyboardButton("🤖 شرط با ربات", callback_data=f"bot|{bet_id}"))
+    bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=sent.message_id, reply_markup=markup)
         types.InlineKeyboardButton("❌ لغو شرط", callback_data=f"cancel|{bet_id}"),
         types.InlineKeyboardButton("✅ پیوستن به شرط", callback_data=f"join|{bet_id}"),
     )
