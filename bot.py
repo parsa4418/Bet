@@ -471,8 +471,7 @@ def start_bet_flow(message, amount):
         f"🎲 شرط جدید شروع شد!\n"
         f"👤 سازنده: {creator_name}\n"
         f"💎 مبلغ شرط: {amount}\n\n"
-        f"یه نفر باید بپیونده تا شرط اجرا بشه.",
-    )
+        f"یه نفر باید بپیونده تا شرط اجرا بشه.",)
 
     bet_id = create_bet(user_id, creator_name, amount, message.chat.id, sent.message_id)
 
