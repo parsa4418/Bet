@@ -1,0 +1,884 @@
+# -*- coding: utf-8 -*-
+"""
+بات شرط‌بندی الماس با Webhook (مناسب برای Render رایگان)
+شامل: شرط متنی، کازینو (تاس/دارت/بولینگ/...)، قانون ۶۰ ثانیه برای هر دو
+"""
+
+import sqlite3
+import random
+import re
+import os
+import time
+import threading
+from flask import Flask, request
+import telebot
+from telebot import types
+
+# ================== تنظیمات ==================
+# ⚠️ توکن رو از Environment Variable بخون، نه هاردکد!
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "توکن-خودت-رو-اینجا-بذار")
+ADMIN_IDS = [8904869158]
+START_DIAMONDS = 10000
+REFERRAL_BONUS = 50000
+TAX_RATE = 0.10
+TAX_RECEIVER_ID = ADMIN_IDS[0]
+JOIN_TIMEOUT_SECONDS = 60  # قانون ۶۰ ثانیه
+
+bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
+DB_PATH = "diamonds.db"
+
+
+# ================== دیتابیس ==================
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            diamonds INTEGER DEFAULT 0,
+            referred_by INTEGER,
+            ref_count INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bets (
+            bet_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            creator_id INTEGER,
+            creator_name TEXT,
+            amount INTEGER,
+            chat_id INTEGER,
+            message_id INTEGER,
+            status TEXT DEFAULT 'pending'
+        )
+    """)
+    return conn
+
+
+def get_user(user_id):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def create_user(user_id, username, referred_by=None):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO users (user_id, username, diamonds, referred_by) VALUES (?,?,?,?)",
+        (user_id, username, START_DIAMONDS, referred_by),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_diamonds(user_id, amount):
+    max_int = 9223372036854775807
+    if amount > max_int:
+        amount = max_int
+    elif amount < -max_int:
+        amount = -max_int
+    conn = get_conn()
+    conn.execute("UPDATE users SET diamonds = diamonds + ? WHERE user_id=?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+
+def add_ref_count(user_id):
+    conn = get_conn()
+    conn.execute("UPDATE users SET ref_count = ref_count + 1 WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_balance(user_id):
+    row = get_user(user_id)
+    return row[2] if row else 0
+
+
+def get_display_name(user):
+    return user.username and f"@{user.username}" or user.first_name
+
+
+def create_bet(creator_id, creator_name, amount, chat_id, message_id):
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO bets (creator_id, creator_name, amount, chat_id, message_id, status) VALUES (?,?,?,?,?,'pending')",
+        (creator_id, creator_name, amount, chat_id, message_id),
+    )
+    conn.commit()
+    bet_id = cur.lastrowid
+    conn.close()
+    return bet_id
+
+
+def get_bet(bet_id):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM bets WHERE bet_id=?", (bet_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def set_bet_status(bet_id, status):
+    conn = get_conn()
+    conn.execute("UPDATE bets SET status=? WHERE bet_id=?", (status, bet_id))
+    conn.commit()
+    conn.close()
+
+
+def get_top_users(limit=10):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT user_id, username, diamonds FROM users ORDER BY diamonds DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+# ================== هندلرها ==================
+@bot.message_handler(commands=["start"])
+def cmd_start(message):
+    user_id = message.from_user.id
+    username = get_display_name(message.from_user)
+    is_new = not get_user(user_id)
+
+    if is_new:
+        args = message.text.split()
+        referrer_id = None
+        if len(args) > 1 and args[1].isdigit():
+            cand = int(args[1])
+            if cand != user_id and get_user(cand):
+                referrer_id = cand
+
+        create_user(user_id, username, referred_by=referrer_id)
+
+        if referrer_id:
+            update_diamonds(referrer_id, REFERRAL_BONUS)
+            add_ref_count(referrer_id)
+            try:
+                bot.send_message(referrer_id, f"🎉 یک نفر با لینک رفرال شما وارد شد! {REFERRAL_BONUS} الماس گرفتید.")
+            except Exception:
+                pass
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data=f"showaccount|{user_id}"))
+    markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data=f"showreferral|{user_id}"))
+    markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
+
+    caption = "به بات شرط‌بندی خوش اومدید🌹"
+    bot.send_message(message.chat.id, caption, reply_markup=markup)
+
+
+# ================== موجودی (با دکمه) ==================
+@bot.message_handler(commands=["balance", "موجودی"])
+def cmd_balance(message):
+    show_balance(message)
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "موجودی")
+def text_balance(message):
+    show_balance(message)
+
+def show_balance(message):
+    user_id = message.from_user.id
+    if not get_user(user_id):
+        bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
+        return
+
+    if message.reply_to_message:
+        target_id = message.reply_to_message.from_user.id
+        if not get_user(target_id):
+            bot.reply_to(message, "این کاربر هنوز /start نزده، نمی‌تونم موجودیش رو ببینم.")
+            return
+        target_name = get_display_name(message.reply_to_message.from_user)
+        balance = get_balance(target_id)
+        text = f"💎 موجودی الماس {target_name}"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
+        bot.reply_to(message, text, reply_markup=markup)
+    else:
+        balance = get_balance(user_id)
+        text = "💎 موجودی شما"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
+        bot.reply_to(message, text, reply_markup=markup)
+
+
+def build_account_view(user_id, display_name):
+    user = get_user(user_id)
+    _, username, diamonds, referred_by, ref_count = user
+    text = (
+        f"👤 حساب کاربری\n"
+        f"نام: {display_name}\n"
+        f"آیدی عددی: {user_id}\n"
+        f"💎 موجودی الماس: {diamonds}\n"
+        f"👥 تعداد زیرمجموعه (رفرال): {ref_count}"
+    )
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💸 انتقال الماس", callback_data=f"acctransfer|{user_id}"))
+    return text, markup
+
+
+@bot.message_handler(commands=["account", "حساب"])
+def cmd_account(message):
+    user_id = message.from_user.id
+    if not get_user(user_id):
+        bot.reply_to(message, "اول /start بزن.")
+        return
+    text, markup = build_account_view(user_id, get_display_name(message.from_user))
+    bot.reply_to(message, text, reply_markup=markup)
+
+
+# ================== رتبه‌بندی ==================
+@bot.message_handler(commands=["rank", "رتبه‌بندی"])
+def cmd_rank(message):
+    top = get_top_users()
+    if not top:
+        bot.reply_to(message, "هنوز کاربری ثبت‌نام نکرده.")
+        return
+
+    text = "🏆 رتبه‌بندی بر اساس الماس\n\n"
+    for idx, (user_id, username, diamonds) in enumerate(top, 1):
+        name = f"{username}" if username else f"کاربر {user_id}"
+        text += f"{idx}. {name} — 💎 {diamonds}\n"
+
+    bot.reply_to(message, text)
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip() in ["رنک", "رتبه بندی"])
+def text_rank(message):
+    cmd_rank(message)
+
+# ================== سایر کالبک‌ها و توابع ==================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("showaccount|"))
+def handle_show_account(call):
+    owner_id = int(call.data.split("|")[1])
+    if call.from_user.id != owner_id:
+        bot.answer_callback_query(call.id, "این حساب متعلق به تو نیست.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    text, markup = build_account_view(owner_id, get_display_name(call.from_user))
+    bot.send_message(call.message.chat.id, text, reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("showreferral|"))
+def handle_show_referral(call):
+    owner_id = int(call.data.split("|")[1])
+    if call.from_user.id != owner_id:
+        bot.answer_callback_query(call.id, "این بخش متعلق به تو نیست.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    user = get_user(owner_id)
+    ref_count = user[4]
+    link = f"https://t.me/{bot.get_me().username}?start={owner_id}"
+    text = (
+        f"👥 زیرمجموعه‌گیری\n"
+        f"تعداد زیرمجموعه‌های شما: {ref_count}\n"
+        f"پاداش هر زیرمجموعه: {REFERRAL_BONUS} 💎\n\n"
+        f"لینک اختصاصی شما:\n{link}"
+    )
+    bot.send_message(call.message.chat.id, text)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "showhelp")
+def handle_show_help(call):
+    bot.answer_callback_query(call.id)
+    text = (
+        "📖 راهنمای استفاده از بات\n\n"
+        "💎 دیدن موجودی خودت:\n"
+        "بنویس: موجودی\n\n"
+        "💎 دیدن موجودی دیگران:\n"
+        "روی پیام شخص مورد نظر ریپلای کن و بنویس: موجودی\n\n"
+        "💸 انتقال الماس به یه نفر دیگه:\n"
+        "روی پیام همون شخص توی گروه ریپلای کن و بنویس:\n"
+        "انتقال الماس <مقدار>\n"
+        "مثال: انتقال الماس 200\n\n"
+        "🎲 شرط‌بندی با یه نفر دیگه:\n"
+        "بنویس: شرط بندی <مقدار>\n"
+        "مثال: شرط بندی 20\n"
+        "بعد از زیر پیام دکمه‌ها استفاده کن (لغو شرط / پیوستن / شرط با ربات)\n"
+        "⏱ اگه ۶۰ ثانیه کسی نپیونده، شرط خودکار لغو و پول برمی‌گرده.\n\n"
+        "🎰 کازینو (تاس/دارت/بولینگ/بسکتبال/فوتبال/اسلات):\n"
+        "بنویس: کازینو\n"
+        "بازی و مبلغ رو انتخاب کن، یه نفر دیگه پیوستن بزنه.\n"
+        "⏱ اینجا هم ۶۰ ثانیه فرصت پیوستن هست.\n\n"
+        "👤 حساب کاربری کامل + دکمه انتقال:\n"
+        "بزن /account\n\n"
+        "👥 لینک رفرال برای دعوت دوستات:\n"
+        "بزن /start و روی «زیرمجموعه‌گیری» بزن\n\n"
+        "🏆 رتبه‌بندی برترین‌ها:\n"
+        "بزن /rank یا بنویس رنک"
+    )
+    bot.send_message(call.message.chat.id, text)
+
+
+def ask_transfer_target(message, owner_id):
+    if message.from_user.id != owner_id:
+        bot.register_next_step_handler(message, ask_transfer_target, owner_id)
+        return
+
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        msg = bot.reply_to(message, "فرمت اشتباهه. دوباره اینطوری بفرست:\n<آیدی عددی مقصد> <مقدار>\nمثال: 123456789 20")
+        bot.register_next_step_handler(msg, ask_transfer_target, owner_id)
+        return
+
+    target_id, amount = int(parts[0]), int(parts[1])
+    ok, result_msg = perform_transfer(owner_id, target_id, amount)
+
+    if not ok and "نزده" in result_msg:
+        result_msg += (
+            "\n\n⚠️ برای اینکه بات بتونه کاربری رو بشناسه، اون شخص باید حتماً یه‌بار "
+            "توی پیوی خودِ بات دستور /start رو بزنه. فقط عضو گروه بودن کافی نیست."
+        )
+    bot.reply_to(message, result_msg)
+
+    if ok:
+        try:
+            bot.send_message(target_id, f"💎 {amount} الماس از طرف کاربر {owner_id} برات واریز شد.")
+        except Exception:
+            pass
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("acctransfer|"))
+def handle_account_transfer_button(call):
+    owner_id = int(call.data.split("|")[1])
+    if call.from_user.id != owner_id:
+        bot.answer_callback_query(call.id, "این حساب متعلق به تو نیست.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(
+        call.message.chat.id,
+        "🔹 روش ساده‌تر (توصیه می‌شه):\n"
+        "توی گروه، روی پیام کاربر مقصد ریپلای کن و بنویس:\n"
+        "انتقال الماس <مقدار>\n(مثال: انتقال الماس 200)\n\n"
+        "🔹 یا از همینجا:\n"
+        "آیدی عددی مقصد و مقدار الماس رو اینطوری بفرست:\n<آیدی عددی> <مقدار>\nمثال: 123456789 20\n\n"
+        "⚠️ نکته: کاربر مقصد باید حتماً یه‌بار خودش توی پیوی بات /start زده باشه، "
+        "وگرنه بات نمی‌تونه بشناستش و همیشه خطای «استارت نزده» می‌ده."
+    )
+    bot.register_next_step_handler(msg, ask_transfer_target, owner_id)
+
+
+@bot.message_handler(func=lambda m: m.text and re.match(r"^افزودن\s+الماس\s+\d+$", m.text.strip()))
+def text_add_diamonds(message):
+    if message.from_user.id not in ADMIN_IDS:
+        bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس اضافه کنه.")
+        return
+    if not message.reply_to_message:
+        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nافزودن الماس <مقدار>\nمثال: افزودن الماس 50")
+        return
+
+    amount = int(re.search(r"\d+", message.text).group())
+    if amount <= 0:
+        bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    if not get_user(target_id):
+        bot.reply_to(message, "این کاربر هنوز /start نزده.")
+        return
+
+    update_diamonds(target_id, amount)
+    bot.reply_to(message, f"✅ {amount} 💎 به کاربر {target_id} اضافه شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
+
+
+@bot.message_handler(func=lambda m: m.text and re.match(r"^کم\s*کردن\s+الماس\s+\d+$", m.text.strip()))
+def text_remove_diamonds(message):
+    if message.from_user.id not in ADMIN_IDS:
+        bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس کم کنه.")
+        return
+    if not message.reply_to_message:
+        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nکم کردن الماس <مقدار>\nمثال: کم کردن الماس 50")
+        return
+
+    amount = int(re.search(r"\d+", message.text).group())
+    if amount <= 0:
+        bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    if not get_user(target_id):
+        bot.reply_to(message, "این کاربر هنوز /start نزده.")
+        return
+
+    deduct = min(amount, get_balance(target_id))
+    update_diamonds(target_id, -deduct)
+    bot.reply_to(message, f"✅ {deduct} 💎 از کاربر {target_id} کم شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
+
+
+def perform_transfer(sender_id, target_id, amount):
+    if amount <= 0:
+        return False, "مقدار باید بزرگتر از صفر باشه."
+    if target_id == sender_id:
+        return False, "نمیشه به خودت انتقال بدی."
+    if not get_user(target_id):
+        return False, "کاربر مقصد هنوز /start نزده."
+    if get_balance(sender_id) < amount:
+        return False, "موجودی کافی نداری."
+    update_diamonds(sender_id, -amount)
+    update_diamonds(target_id, amount)
+    return True, f"✅ {amount} 💎 به کاربر {target_id} منتقل شد.\nموجودی جدید تو: {get_balance(sender_id)} 💎"
+
+
+@bot.message_handler(commands=["transfer"])
+def cmd_transfer(message):
+    sender_id = message.from_user.id
+    if not get_user(sender_id):
+        bot.reply_to(message, "اول /start بزن.")
+        return
+    if not message.reply_to_message:
+        bot.reply_to(message, "روی پیام مقصد ریپلای کن: /transfer <مقدار>")
+        return
+    parts = message.text.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        bot.reply_to(message, "مثال: /transfer 20")
+        return
+    amount = int(parts[1])
+    target_id = message.reply_to_message.from_user.id
+    ok, msg = perform_transfer(sender_id, target_id, amount)
+    bot.reply_to(message, msg)
+
+
+@bot.message_handler(func=lambda m: m.text and re.match(r"^انتقال\s+الماس\s+\d+$", m.text.strip()))
+def text_transfer(message):
+    sender_id = message.from_user.id
+    if not get_user(sender_id):
+        bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
+        return
+    if not message.reply_to_message:
+        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nانتقال الماس <مقدار>\nمثال: انتقال الماس 200")
+        return
+
+    amount = int(re.search(r"\d+", message.text).group())
+    target_id = message.reply_to_message.from_user.id
+    ok, msg = perform_transfer(sender_id, target_id, amount)
+    bot.reply_to(message, msg)
+
+
+# ================== قانون ۶۰ ثانیه برای شرط متنی ==================
+def check_bet_timeout(bet_id):
+    bet = get_bet(bet_id)
+    if not bet:
+        return
+    _, creator_id, creator_name, amount, chat_id, message_id, status = bet
+    if status != "pending":
+        return  # قبلاً پیوستن/لغو/شرط با ربات انجام شده
+
+    update_diamonds(creator_id, amount)  # برگردوندن پول
+    set_bet_status(bet_id, "timeout")
+    try:
+        bot.edit_message_text(
+            f"⏱ زمان تموم شد!\n"
+            f"هیچ‌کس ظرف {JOIN_TIMEOUT_SECONDS} ثانیه به شرط {creator_name} نپیوست.\n"
+            f"💎 مبلغ ({amount}) به سازنده برگردونده شد.",
+            chat_id=chat_id, message_id=message_id, reply_markup=None,
+        )
+    except Exception:
+        pass
+
+
+def start_bet_flow(message, amount):
+    user_id = message.from_user.id
+    if not get_user(user_id):
+        bot.reply_to(message, "اول /start بزن.")
+        return
+
+    if amount <= 0:
+        bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
+        return
+    if get_balance(user_id) < amount:
+        bot.reply_to(message, "موجودی الماس کافی نداری.")
+        return
+
+    creator_name = get_display_name(message.from_user)
+    update_diamonds(user_id, -amount)
+
+    sent = bot.send_message(
+        message.chat.id,
+        f"🎲 شرط جدید شروع شد!\n"
+        f"👤 سازنده: {creator_name}\n"
+        f"💎 مبلغ شرط: {amount}\n\n"
+        f"یه نفر باید ظرف {JOIN_TIMEOUT_SECONDS} ثانیه بپیونده تا شرط اجرا بشه.",
+    )
+
+    bet_id = create_bet(user_id, creator_name, amount, message.chat.id, sent.message_id)
+
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("❌ لغو شرط", callback_data=f"cancel|{bet_id}"),
+        types.InlineKeyboardButton("✅ پیوستن به شرط", callback_data=f"join|{bet_id}"),
+    )
+    markup.row(types.InlineKeyboardButton("🤖 شرط با ربات", callback_data=f"bot|{bet_id}"))
+    bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=sent.message_id, reply_markup=markup)
+
+    threading.Timer(JOIN_TIMEOUT_SECONDS, check_bet_timeout, args=[bet_id]).start()
+
+
+@bot.message_handler(commands=["bet", "شرط"])
+def cmd_bet(message):
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        bot.reply_to(message, "استفاده درست: /bet <مقدار>\nمثال: /bet 20")
+        return
+    start_bet_flow(message, int(parts[1]))
+
+
+@bot.message_handler(func=lambda m: m.text and re.match(r"^شرط\s*بندی?\s+\d+$", m.text.strip()))
+def text_bet(message):
+    amount = int(re.search(r"\d+", message.text).group())
+    start_bet_flow(message, amount)
+
+
+def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
+    bet = get_bet(bet_id)
+    _, creator_id, creator_name, amount, chat_id, message_id, status = bet
+
+    winner_is_creator = random.random() < 0.5
+    pool = 2 * amount
+    tax = int(pool * TAX_RATE)
+    payout = pool - tax
+
+    if winner_is_creator:
+        update_diamonds(creator_id, payout)
+        winner_name, winner_id = creator_name, creator_id
+        loser_name, loser_id = opponent_name, opponent_id
+    else:
+        if not is_bot:
+            update_diamonds(opponent_id, payout)
+        winner_name, winner_id = opponent_name, opponent_id
+        loser_name, loser_id = creator_name, creator_id
+
+    if get_user(TAX_RECEIVER_ID):
+        update_diamonds(TAX_RECEIVER_ID, tax)
+
+    set_bet_status(bet_id, "finished")
+
+    winner_id_str = str(winner_id) if winner_id is not None else "—"
+    loser_id_str = str(loser_id) if loser_id is not None else "—"
+
+    text = (
+        f"🎲 شرط تموم شد!\n"
+        f"💎 مبلغ: {amount}\n"
+        f"⚔️ {creator_name} در برابر {opponent_name}\n\n"
+        f"🏆 برنده: {winner_name} (آیدی: {winner_id_str})\n"
+        f"😢 بازنده: {loser_name} (آیدی: {loser_id_str})\n\n"
+        f"💰 مبلغ برد: {pool}\n"
+        f"🏛 مالیات ({int(TAX_RATE*100)}٪): {tax}\n"
+        f"✅ مبلغ نهایی برنده: {payout}"
+    )
+    bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=None)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == "pending" or call.data.split("|")[0] in ("cancel", "join", "bot")
+)
+def handle_callback(call):
+    if call.data == "pending":
+        bot.answer_callback_query(call.id, "لطفاً چند لحظه صبر کن...")
+        return
+
+    action, bet_id_str = call.data.split("|")
+    bet_id = int(bet_id_str)
+    bet = get_bet(bet_id)
+
+    if not bet:
+        bot.answer_callback_query(call.id, "این شرط پیدا نشد.", show_alert=True)
+        return
+
+    _, creator_id, creator_name, amount, chat_id, message_id, status = bet
+
+    if status != "pending":
+        bot.answer_callback_query(call.id, "این شرط قبلاً تموم شده.", show_alert=True)
+        return
+
+    clicker_id = call.from_user.id
+    clicker_name = get_display_name(call.from_user)
+
+    if action == "cancel":
+        if clicker_id != creator_id:
+            bot.answer_callback_query(call.id, "فقط سازنده شرط می‌تونه لغو کنه.", show_alert=True)
+            return
+        update_diamonds(creator_id, amount)
+        set_bet_status(bet_id, "cancelled")
+        bot.edit_message_text(
+            f"❌ شرط توسط {creator_name} لغو شد.\nمبلغ ({amount} 💎) برگردونده شد.",
+            chat_id=chat_id, message_id=message_id, reply_markup=None,
+        )
+        bot.answer_callback_query(call.id, "شرط لغو شد.")
+        return
+
+    if action == "join":
+        if clicker_id == creator_id:
+            bot.answer_callback_query(call.id, "سازنده حق شرکت در شرط خودش رو نداره!", show_alert=True)
+            return
+        if not get_user(clicker_id):
+            bot.answer_callback_query(call.id, "شما باید ابتدا در بات /start را بزنید.", show_alert=True)
+            return
+        if get_balance(clicker_id) < amount:
+            bot.answer_callback_query(call.id, "موجودی کافی برای پیوستن به این شرط ندارید.", show_alert=True)
+            return
+
+        update_diamonds(clicker_id, -amount)
+        resolve_bet(bet_id, clicker_id, clicker_name, is_bot=False)
+        bot.answer_callback_query(call.id, "شما به شرط پیوستید. نتیجه اعلام شد.")
+        return
+
+    if action == "bot":
+        if clicker_id != creator_id:
+            bot.answer_callback_query(call.id, "فقط سازنده می‌تونه با ربات شرط ببنده.", show_alert=True)
+            return
+        resolve_bet(bet_id, None, "ربات", is_bot=True)
+        bot.answer_callback_query(call.id, "شرط با ربات شروع شد. نتیجه اعلام شد.")
+        return
+
+
+# ================== کازینو (تاس/دارت/بولینگ/...) ==================
+CASINO_GAMES = {
+    "dice": "🎲",
+    "dart": "🎯",
+    "basket": "🏀",
+    "football": "⚽",
+    "bowling": "🎳",
+    "slot": "🎰",
+}
+CASINO_GAME_NAMES = {
+    "dice": "تاس",
+    "dart": "دارت",
+    "basket": "بسکتبال",
+    "football": "فوتبال",
+    "bowling": "بولینگ",
+    "slot": "اسلات",
+}
+CASINO_BET_PRESETS = [10, 50, 100, 500, 1000]
+
+# state هر بازی فعال کازینو، کلید = message_id پیام پنل
+active_casino_games = {}
+_casino_lock = threading.Lock()
+
+
+def casino_games_keyboard():
+    markup = types.InlineKeyboardMarkup()
+    for key, emoji in CASINO_GAMES.items():
+        markup.add(types.InlineKeyboardButton(f"{emoji} {CASINO_GAME_NAMES[key]}", callback_data=f"cgame|{key}"))
+    return markup
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "کازینو")
+def casino_panel(message):
+    if not get_user(message.from_user.id):
+        bot.reply_to(message, "اول /start بزن.")
+        return
+    bot.send_message(
+        message.chat.id,
+        "🎰 به کازینو خوش اومدی!\nیکی از بازی‌ها رو انتخاب کن:",
+        reply_markup=casino_games_keyboard()
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cgame|"))
+def casino_game_select(call):
+    bot.answer_callback_query(call.id)
+    game_key = call.data.split("|")[1]
+
+    markup = types.InlineKeyboardMarkup()
+    markup.row(*[
+        types.InlineKeyboardButton(f"💎 {amt}", callback_data=f"cbet|{game_key}|{amt}")
+        for amt in CASINO_BET_PRESETS[:3]
+    ])
+    markup.row(*[
+        types.InlineKeyboardButton(f"💎 {amt}", callback_data=f"cbet|{game_key}|{amt}")
+        for amt in CASINO_BET_PRESETS[3:]
+    ])
+    markup.row(types.InlineKeyboardButton("🔙 بازگشت", callback_data="cback"))
+
+    bot.edit_message_text(
+        f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]} انتخاب شد.\n💎 مبلغ شرط رو انتخاب کن:",
+        chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "cback")
+def casino_back(call):
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(
+        "🎰 به کازینو خوش اومدی!\nیکی از بازی‌ها رو انتخاب کن:",
+        chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=casino_games_keyboard()
+    )
+
+
+def check_casino_timeout(msg_id):
+    with _casino_lock:
+        game = active_casino_games.get(msg_id)
+        if not game or game["player2"] is not None:
+            return  # یا وجود نداره یا قبلاً شروع شده
+        update_diamonds(game["player1"]["id"], game["bet"])  # برگردوندن پول
+        del active_casino_games[msg_id]
+
+    try:
+        bot.edit_message_text(
+            f"⏱ زمان تموم شد!\n"
+            f"هیچ‌کس ظرف {JOIN_TIMEOUT_SECONDS} ثانیه به بازی {game['player1']['name']} نپیوست.\n"
+            f"💎 مبلغ ({game['bet']}) به سازنده برگردونده شد.",
+            chat_id=game["chat_id"], message_id=msg_id, reply_markup=None,
+        )
+    except Exception:
+        pass
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cbet|"))
+def casino_bet_select(call):
+    _, game_key, amount = call.data.split("|")
+    amount = int(amount)
+    user = call.from_user
+
+    if not get_user(user.id):
+        bot.answer_callback_query(call.id, "اول /start بزن.", show_alert=True)
+        return
+    if get_balance(user.id) < amount:
+        bot.answer_callback_query(call.id, "💎 موجودی الماس شما کافی نیست!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    update_diamonds(user.id, -amount)  # قفل کردن مبلغ سازنده
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"))
+    text = (
+        f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]}\n"
+        f"💎 مبلغ شرط: {amount}\n\n"
+        f"👤 بازیکن اول: {get_display_name(user)}\n"
+        f"⏳ منتظر بازیکن دوم... (فرصت: {JOIN_TIMEOUT_SECONDS} ثانیه)"
+    )
+    bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    msg_id = call.message.message_id
+
+    with _casino_lock:
+        active_casino_games[msg_id] = {
+            "game": game_key,
+            "bet": amount,
+            "chat_id": call.message.chat.id,
+            "player1": {"id": user.id, "name": get_display_name(user)},
+            "player2": None,
+        }
+
+    threading.Timer(JOIN_TIMEOUT_SECONDS, check_casino_timeout, args=[msg_id]).start()
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "cjoin")
+def casino_join(call):
+    msg_id = call.message.message_id
+    with _casino_lock:
+        game = active_casino_games.get(msg_id)
+        if not game:
+            bot.answer_callback_query(call.id, "این بازی دیگه معتبر نیست.", show_alert=True)
+            return
+        if game["player2"] is not None:
+            bot.answer_callback_query(call.id, "بازی قبلاً پر شده.", show_alert=True)
+            return
+
+        user = call.from_user
+        if user.id == game["player1"]["id"]:
+            bot.answer_callback_query(call.id, "نمی‌تونی با خودت بازی کنی!", show_alert=True)
+            return
+        if not get_user(user.id):
+            bot.answer_callback_query(call.id, "اول /start بزن.", show_alert=True)
+            return
+        if get_balance(user.id) < game["bet"]:
+            bot.answer_callback_query(call.id, "💎 موجودی الماس شما کافی نیست!", show_alert=True)
+            return
+
+        game["player2"] = {"id": user.id, "name": get_display_name(user)}
+        update_diamonds(user.id, -game["bet"])  # قفل کردن مبلغ نفر دوم
+
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(
+        f"{CASINO_GAMES[game['game']]} بازی شروع شد!\n"
+        f"⚔️ {game['player1']['name']} در برابر {game['player2']['name']}\n"
+        f"💎 مبلغ: {game['bet']}\n\n"
+        f"🎲 در حال انداختن...",
+        chat_id=game["chat_id"], message_id=msg_id, reply_markup=None
+    )
+
+    run_casino_game(msg_id)
+
+
+def run_casino_game(msg_id):
+    game = active_casino_games.get(msg_id)
+    if not game:
+        return
+
+    emoji = CASINO_GAMES[game["game"]]
+    chat_id = game["chat_id"]
+
+    dice1 = bot.send_dice(chat_id, emoji=emoji)
+    dice2 = bot.send_dice(chat_id, emoji=emoji)
+
+    score1 = dice1.dice.value
+    score2 = dice2.dice.value
+
+    time.sleep(4)  # صبر برای تموم شدن انیمیشن
+
+    if score1 == score2:
+        update_diamonds(game["player1"]["id"], game["bet"])
+        update_diamonds(game["player2"]["id"], game["bet"])
+        result_text = (
+            f"{emoji} شرط تموم شد!\n"
+            f"💎 مبلغ: {game['bet']}\n"
+            f"⚔️ {game['player1']['name']} در برابر {game['player2']['name']}\n\n"
+            f"🤝 مساوی شد! (امتیاز: {score1} - {score2})\n"
+            f"💰 مبلغ به هر دو نفر برگشت داده شد."
+        )
+    else:
+        if score1 > score2:
+            winner, loser, w_score, l_score = game["player1"], game["player2"], score1, score2
+        else:
+            winner, loser, w_score, l_score = game["player2"], game["player1"], score2, score1
+
+        total_pot = game["bet"] * 2
+        tax = int(total_pot * TAX_RATE)
+        final_amount = total_pot - tax
+
+        update_diamonds(winner["id"], final_amount)
+        if get_user(TAX_RECEIVER_ID):
+            update_diamonds(TAX_RECEIVER_ID, tax)
+
+        result_text = (
+            f"{emoji} شرط تموم شد!\n"
+            f"💎 مبلغ: {game['bet']}\n"
+            f"⚔️ {game['player1']['name']} در برابر {game['player2']['name']}\n\n"
+            f"🏆 برنده: {winner['name']} (امتیاز: {w_score})\n"
+            f"😢 بازنده: {loser['name']} (امتیاز: {l_score})\n\n"
+            f"💰 مبلغ برد: {total_pot}\n"
+            f"🏛 مالیات ({int(TAX_RATE*100)}٪): {tax}\n"
+            f"✅ مبلغ نهایی برنده: {final_amount}"
+        )
+
+    bot.edit_message_text(result_text, chat_id=chat_id, message_id=msg_id)
+
+    with _casino_lock:
+        active_casino_games.pop(msg_id, None)
+
+
+# ================== Webhook ==================
+@app.route("/", methods=["GET"])
+def health_check():
+    return "Bot is running!", 200
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    if request.headers.get("content-type") == "application/json":
+        json_str = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return "", 200
+    return "", 403
+
+
+# ================== اجرا ==================
+if __name__ == "__main__":
+    WEBHOOK_URL = "https://bet-bot-e1c2.onrender.com/webhook"
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
