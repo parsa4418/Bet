@@ -13,10 +13,10 @@ import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAGU965kJNOTftDAEYwpLAdDVSvbKT4yM6o"  # توکن خود را وارد کنید
+BOT_TOKEN = "توکن_ربات_خودت"  # توکن خود را وارد کنید
 ADMIN_IDS = [8904869158]
-START_DIAMONDS = 10000  # تغییر داده شد به ۱۰۰۰۰
-REFERRAL_BONUS = 25
+START_DIAMONDS = 10000
+REFERRAL_BONUS = 50000  # تغییر داده شد به ۵۰۰۰۰
 TAX_RATE = 0.10
 TAX_RECEIVER_ID = ADMIN_IDS[0]
 
@@ -69,7 +69,6 @@ def create_user(user_id, username, referred_by=None):
 
 
 def update_diamonds(user_id, amount):
-    # جلوگیری از OverflowError
     max_int = 9223372036854775807
     if amount > max_int:
         amount = max_int
@@ -123,7 +122,6 @@ def set_bet_status(bet_id, status):
     conn.close()
 
 
-# ================== تابع رتبه‌بندی (جدید) ==================
 def get_top_users(limit=10):
     conn = get_conn()
     rows = conn.execute(
@@ -210,7 +208,7 @@ def cmd_account(message):
     bot.reply_to(message, text, reply_markup=markup)
 
 
-# ================== هندلر رتبه‌بندی (جدید) ==================
+# ================== هندلر رتبه‌بندی ==================
 @bot.message_handler(commands=["rank", "رتبه‌بندی"])
 def cmd_rank(message):
     top = get_top_users()
@@ -224,6 +222,13 @@ def cmd_rank(message):
         text += f"{idx}. {name} — 💎 {diamonds}\n"
 
     bot.reply_to(message, text, parse_mode="Markdown")
+
+
+# ================== هندلر جدید برای کلمه "رنک" ==================
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "رنک")
+def text_rank(message):
+    # همان تابع cmd_rank را صدا می‌زنیم
+    cmd_rank(message)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("showaccount|"))
@@ -276,7 +281,7 @@ def handle_show_help(call):
         "👥 لینک رفرال برای دعوت دوستات:\n"
         "بزن /start و روی «زیرمجموعه‌گیری» بزن\n\n"
         "🏆 رتبه‌بندی برترین‌ها:\n"
-        "بزن /rank"
+        "بزن /rank یا بنویس رنک"
     )
     bot.send_message(call.message.chat.id, text)
 
@@ -599,6 +604,5 @@ if __name__ == "__main__":
     WEBHOOK_URL = "https://bet-bot-e1c2.onrender.com/webhook"
     bot.remove_webhook()
     bot.set_webhook(url=WEBHOOK_URL)
-    # پورت را از محیط بگیر (برای Render) یا از ۵۰۰۰ استفاده کن
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
