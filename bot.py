@@ -13,7 +13,7 @@ import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAEKrgHQkHmKrZXAEJEsQmKzLiZhzfiP3wQ"  # توکن خود را وارد کنید
+BOT_TOKEN = "8666764154:AAEGqUnxZMZELXaM8JbDFZuDL4MxfGFitRA"  # توکن خود را وارد کنید
 ADMIN_IDS = [8904869158]
 START_DIAMONDS = 10000  # تغییر داده شد به ۱۰۰۰۰
 REFERRAL_BONUS = 25
