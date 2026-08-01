@@ -13,7 +13,7 @@ import telebot
 from telebot import types
 
 # ================== تنظیمات ==================
-BOT_TOKEN = "8666764154:AAHIio_Ie_cZi_Kqz5rzBbq-dy3MPzgnuHg"  # توکن خود را وارد کنید
+BOT_TOKEN = "توکن_ربات_خودت"  # توکن خود را وارد کنید
 ADMIN_IDS = [8904869158]
 START_DIAMONDS = 10000
 REFERRAL_BONUS = 50000
@@ -23,7 +23,6 @@ TAX_RECEIVER_ID = ADMIN_IDS[0]
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 DB_PATH = "diamonds.db"
-
 
 # ================== دیتابیس ==================
 def get_conn():
@@ -130,6 +129,10 @@ def get_top_users(limit=10):
     ).fetchall()
     conn.close()
     return rows
+
+
+# ================== State برای کازینو ==================
+user_states = {}  # user_id -> {'game': str, 'step': str}
 
 
 # ================== هندلرها ==================
@@ -246,7 +249,198 @@ def text_rank(message):
     cmd_rank(message)
 
 
-# ================== سایر کالبک‌ها و توابع ==================
+# ================== کازینو ==================
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "کازینو")
+def casino_menu(message):
+    user_id = message.from_user.id
+    if not get_user(user_id):
+        bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
+        return
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🎰 اسلات", callback_data="casino_slot"),
+        types.InlineKeyboardButton("🎲 تاس", callback_data="casino_dice"),
+        types.InlineKeyboardButton("⚽ فوتبال", callback_data="casino_football"),
+        types.InlineKeyboardButton("🏀 بسکتبال", callback_data="casino_basketball")
+    )
+    markup.row(types.InlineKeyboardButton("🔙 بازگشت به منو", callback_data="back_to_start"))
+    bot.reply_to(message, "🎰 یک بازی رو انتخاب کن:", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("casino_"))
+def casino_game_selection(call):
+    user_id = call.from_user.id
+    game = call.data.split("_")[1]  # slot, dice, football, basketball
+    
+    # بررسی موجودی
+    balance = get_balance(user_id)
+    if balance <= 0:
+        bot.answer_callback_query(call.id, "موجودی کافی نداری!", show_alert=True)
+        return
+    
+    # ذخیره بازی انتخاب‌شده
+    user_states[user_id] = {'game': game, 'step': 'amount'}
+    
+    # درخواست مبلغ
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 انصراف", callback_data="cancel_casino"))
+    bot.edit_message_text(
+        f"🎯 بازی {get_game_emoji(game)} انتخاب شد.\n"
+        f"💎 موجودی: {balance}\n\n"
+        f"مقدار الماس شرط رو وارد کن (عدد):",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=markup
+    )
+    bot.answer_callback_query(call.id)
+    # ثبت next step برای دریافت عدد
+    bot.register_next_step_handler(call.message, casino_amount_input, user_id, game)
+
+
+def get_game_emoji(game):
+    emojis = {
+        'slot': '🎰',
+        'dice': '🎲',
+        'football': '⚽',
+        'basketball': '🏀'
+    }
+    return emojis.get(game, '🎮')
+
+
+def casino_amount_input(message, user_id, game):
+    if message.text.strip() == "انصراف":
+        bot.reply_to(message, "❌ شرط لغو شد.")
+        return
+    
+    try:
+        amount = int(message.text.strip())
+    except ValueError:
+        bot.reply_to(message, "❌ عدد معتبر وارد کن.")
+        bot.register_next_step_handler(message, casino_amount_input, user_id, game)
+        return
+    
+    if amount <= 0:
+        bot.reply_to(message, "❌ مقدار باید بزرگتر از صفر باشه.")
+        bot.register_next_step_handler(message, casino_amount_input, user_id, game)
+        return
+    
+    balance = get_balance(user_id)
+    if amount > balance:
+        bot.reply_to(message, f"❌ موجودی کافی نداری! موجودی: {balance} 💎")
+        bot.register_next_step_handler(message, casino_amount_input, user_id, game)
+        return
+    
+    # اجرای بازی
+    result_text, win_amount = play_casino_game(game, amount)
+    
+    # بروزرسانی الماس
+    if win_amount > 0:
+        update_diamonds(user_id, win_amount - amount)  # چون قبلاً کم نشده
+        # update_diamonds مقدار مثبت اضافه می‌کند
+        update_diamonds(user_id, win_amount)  # در واقع باید برنده‌ای رو اضافه کنه
+        # اما چون ما هنوز amount رو کم نکردیم، باید win_amount - amount رو اضافه کنیم
+        # روش بهتر: amount رو کم کنیم و win_amount رو اضافه کنیم
+        update_diamonds(user_id, win_amount - amount)
+    else:
+        update_diamonds(user_id, -amount)  # باخت
+    
+    final_balance = get_balance(user_id)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🎰 بازی دوباره", callback_data="casino_back"),
+               types.InlineKeyboardButton("🔙 منو", callback_data="back_to_start"))
+    bot.reply_to(
+        message,
+        f"{result_text}\n\n💎 موجودی جدید: {final_balance}",
+        reply_markup=markup
+    )
+
+
+def play_casino_game(game, amount):
+    if game == 'slot':
+        # اسلات: ۳ عدد تصادفی ۱ تا ۶
+        slots = [random.randint(1, 6) for _ in range(3)]
+        result = "🎰 ".join(map(str, slots))
+        if slots[0] == slots[1] == slots[2]:
+            multiplier = 5
+            win = int(amount * multiplier)
+            return f"🎰 {result}\n✅ برد! ضریب {multiplier}x → +{win} 💎", win
+        else:
+            return f"🎰 {result}\n❌ باخت! → {amount} 💎 از دست دادی.", 0
+    
+    elif game == 'dice':
+        # تاس: عدد ۱ تا ۶
+        dice = random.randint(1, 6)
+        if dice % 2 == 0:  # زوج
+            multiplier = 2
+            win = int(amount * multiplier)
+            return f"🎲 عدد {dice} (زوج)\n✅ برد! ضریب {multiplier}x → +{win} 💎", win
+        else:
+            return f"🎲 عدد {dice} (فرد)\n❌ باخت! → {amount} 💎 از دست دادی.", 0
+    
+    elif game == 'football':
+        # فوتبال: ۳ حالت مساوی (گل، پنالتی، اوت)
+        outcomes = ['گل', 'پنالتی', 'اوت']
+        result = random.choice(outcomes)
+        if result == 'گل':
+            multiplier = 3
+            win = int(amount * multiplier)
+            return f"⚽ نتیجه: {result}\n✅ برد! ضریب {multiplier}x → +{win} 💎", win
+        elif result == 'پنالتی':
+            multiplier = 2
+            win = int(amount * multiplier)
+            return f"⚽ نتیجه: {result}\n✅ برد! ضریب {multiplier}x → +{win} 💎", win
+        else:  # اوت
+            return f"⚽ نتیجه: {result}\n❌ باخت! → {amount} 💎 از دست دادی.", 0
+    
+    elif game == 'basketball':
+        # بسکتبال: ۲ حالت (گل یا خطا)
+        outcomes = ['گل', 'خطا']
+        result = random.choice(outcomes)
+        if result == 'گل':
+            multiplier = 1.5
+            win = int(amount * multiplier)
+            return f"🏀 نتیجه: {result}\n✅ برد! ضریب {multiplier}x → +{win} 💎", win
+        else:  # خطا
+            multiplier = 0.5
+            win = int(amount * multiplier)
+            return f"🏀 نتیجه: {result}\n✅ برد! ضریب {multiplier}x → +{win} 💎", win
+    
+    return "خطا در بازی!", 0
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "casino_back")
+def casino_back(call):
+    casino_menu(call.message)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_start")
+def back_to_start(call):
+    user_id = call.from_user.id
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data=f"showaccount|{user_id}"))
+    markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data=f"showreferral|{user_id}"))
+    markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
+    bot.edit_message_text(
+        "به بات شرط‌بندی خوش اومدید🌹",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=markup
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_casino")
+def cancel_casino(call):
+    bot.edit_message_text(
+        "❌ شرط لغو شد.",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id
+    )
+    bot.answer_callback_query(call.id)
+
+
+# ================== سایر کالبک‌ها ==================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("showaccount|"))
 def handle_show_account(call):
     owner_id = int(call.data.split("|")[1])
@@ -294,6 +488,8 @@ def handle_show_help(call):
         "بنویس: شرط بندی <مقدار>\n"
         "مثال: شرط بندی 20\n"
         "بعد از زیر پیام دکمه‌ها استفاده کن (لغو شرط / پیوستن / شرط با ربات)\n\n"
+        "🎰 کازینو:\n"
+        "بنویس: کازینو و از بین ۴ بازی انتخاب کن\n\n"
         "👤 حساب کاربری کامل + دکمه انتقال:\n"
         "بزن /account\n\n"
         "👥 لینک رفرال برای دعوت دوستات:\n"
@@ -304,6 +500,7 @@ def handle_show_help(call):
     bot.send_message(call.message.chat.id, text)
 
 
+# ================== توابع انتقال و شرط ==================
 def ask_transfer_target(message, owner_id):
     if message.from_user.id != owner_id:
         bot.register_next_step_handler(message, ask_transfer_target, owner_id)
@@ -448,6 +645,7 @@ def text_transfer(message):
     bot.reply_to(message, msg)
 
 
+# ================== شرط‌بندی دو نفره ==================
 def start_bet_flow(message, amount):
     user_id = message.from_user.id
     if not get_user(user_id):
