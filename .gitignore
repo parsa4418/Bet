@@ -1,19 +1,53 @@
-# دیتابیس محلی - نباید تو گیت باشه
+# دیتابیس
 *.db
 *.sqlite
 *.sqlite3
+diamonds.db
 
-# فایل‌های محیطی حاوی توکن/سکرت
+# فایل‌های محیطی و توکن
 .env
+.env.local
+config.py
+secrets.py
+*.key
+*.pem
 
-# پایتون
+# محیط مجازی پایتون
+venv/
+env/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# فایل‌های کش و کامپایل
 __pycache__/
 *.pyc
 *.pyo
-.venv/
-venv/
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
 
-# سیستم‌عامل / ادیتور
+# فایل‌های لاگ
+logs/
+*.log
+
+# فایل‌های موقت سیستم‌عامل
 .DS_Store
+Thumbs.db
+*.tmp
+
+# فایل‌های ادیتور
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+
+# فایل‌های Render (اختیاری)
+.DS_Store
