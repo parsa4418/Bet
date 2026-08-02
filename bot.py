@@ -371,6 +371,7 @@ def loan_menu(call):
         )
         return
 
+    # اضافه کردن دکمه منوی اصلی زیر پیام درخواست مبلغ
     safe_edit_message(
         f"💰 وام الماس\n\n"
         f"💳 وام فعلی شما: {current} 💎 (از سقف {LOAN_MAX})\n"
@@ -380,7 +381,7 @@ def loan_menu(call):
         f"مبلغی که می‌خوای وام بگیری رو به عدد بفرست:",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        reply_markup=None
+        reply_markup=back_to_main_menu_markup()  # تغییر: اضافه کردن دکمه منو
     )
     bot.register_next_step_handler(call.message, loan_amount_step, user_id, remaining)
 
