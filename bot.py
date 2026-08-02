@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-بات شرط‌بندی الماس با Webhook (نسخه نهایی - رفع قفل دیتابیس، دکمه برگشت، ویرایش پیام)
+بات شرط‌بندی الماس با Webhook - نسخه نهایی با تنظیمات دقیق
 """
 
 import sqlite3
@@ -36,7 +36,7 @@ DB_PATH = "diamonds.db"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# ================== قفل‌های سراسری ==================
+# ================== قفل‌ها ==================
 db_lock = threading.Lock()
 casino_lock = threading.Lock()
 active_casino_games = {}
@@ -45,7 +45,6 @@ casino_timers = {}
 # ================== دیتابیس ==================
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    # فعال‌سازی WAL برای جلوگیری از قفل‌شدن همزمان
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("""
@@ -211,8 +210,20 @@ def calculate_payout(winner_id, pool):
         final_payout = 0
     return final_payout, admin_tax, loan_repay
 
-# ================== دکمه بازگشت ==================
+# ================== توابع دکمه‌ها ==================
 def main_menu_markup():
+    """دکمه‌های منوی اصلی (بدون دکمه برگشت به خانه)"""
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data="showaccount"))
+    markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data="showreferral"))
+    markup.add(types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu"))
+    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس💎", callback_data="spinwheel"))
+    markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
+    markup.add(types.InlineKeyboardButton("🎰 کازینو", callback_data="casinomenu"))
+    return markup
+
+def back_to_main_menu_markup():
+    """دکمه بازگشت به منوی اصلی (برای بخش‌های فرعی غیر از کازینو)"""
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     return markup
@@ -258,74 +269,53 @@ def cmd_start(message):
             except Exception:
                 pass
 
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data=f"showaccount|{user_id}"))
-    markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data=f"showreferral|{user_id}"))
-    markup.add(types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu"))
-    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس💎", callback_data="spinwheel"))
-    markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
-
-    safe_send_message(message.chat.id, "به بات شرط‌بندی خوش اومدید🌹", reply_markup=markup)
+    caption = "به بات شرط‌بندی خوش اومدید🌹\nاز دکمه‌های زیر استفاده کنید:"
+    try:
+        photo_url = "https://example.com/start_photo.jpg"  # آدرس عکس را جایگزین کنید
+        bot.send_photo(
+            message.chat.id,
+            photo=photo_url,
+            caption=caption,
+            reply_markup=main_menu_markup()
+        )
+    except Exception:
+        safe_send_message(message.chat.id, caption, reply_markup=main_menu_markup())
 
 # ================== کالبک منوی اصلی ==================
 @bot.callback_query_handler(func=lambda call: call.data == "mainmenu")
 def main_menu(call):
     bot.answer_callback_query(call.id)
+    caption = "به بات شرط‌بندی خوش اومدید🌹\nاز دکمه‌های زیر استفاده کنید:"
+    try:
+        photo_url = "https://example.com/start_photo.jpg"
+        bot.send_photo(
+            call.message.chat.id,
+            photo=photo_url,
+            caption=caption,
+            reply_markup=main_menu_markup()
+        )
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except Exception:
+        safe_edit_message(
+            caption,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=main_menu_markup()
+        )
+
+# ================== بخش حساب کاربری ==================
+@bot.callback_query_handler(func=lambda call: call.data == "showaccount")
+def handle_show_account(call):
+    bot.answer_callback_query(call.id)
     user_id = call.from_user.id
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data=f"showaccount|{user_id}"))
-    markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data=f"showreferral|{user_id}"))
-    markup.add(types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu"))
-    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس💎", callback_data="spinwheel"))
-    markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
-    safe_edit_message(
-        "به بات شرط‌بندی خوش اومدید🌹",
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        reply_markup=markup
-    )
-
-# ================== موجودی ==================
-@bot.message_handler(commands=["balance", "موجودی"])
-def cmd_balance(message):
-    show_balance(message)
-
-@bot.message_handler(func=lambda m: m.text and m.text.strip() == "موجودی")
-def text_balance(message):
-    show_balance(message)
-
-def show_balance(message):
-    user_id = message.from_user.id
-    if not get_user(user_id):
-        bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
-        return
-
-    if message.reply_to_message:
-        target_id = message.reply_to_message.from_user.id
-        if not get_user(target_id):
-            bot.reply_to(message, "این کاربر هنوز /start نزده، نمی‌تونم موجودیش رو ببینم.")
-            return
-        target_name = get_display_name(message.reply_to_message.from_user)
-        balance = get_balance(target_id)
-        text = f"💎 موجودی الماس {target_name}"
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
-        markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
-        bot.reply_to(message, text, reply_markup=markup)
-    else:
-        balance = get_balance(user_id)
-        text = "💎 موجودی شما"
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
-        markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
-        bot.reply_to(message, text, reply_markup=markup)
-
-def build_account_view(user_id, display_name):
     user = get_user(user_id)
+    if not user:
+        bot.send_message(call.message.chat.id, "اول /start بزن.")
+        return
     _, username, diamonds, referred_by, ref_count, loan_balance, last_spin = user
     text = (
         f"👤 حساب کاربری\n"
-        f"نام: {display_name}\n"
+        f"نام: {get_display_name(call.from_user)}\n"
         f"آیدی عددی: {user_id}\n"
         f"💎 موجودی الماس: {diamonds}\n"
         f"👥 تعداد زیرمجموعه (رفرال): {ref_count}\n"
@@ -334,67 +324,97 @@ def build_account_view(user_id, display_name):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("💸 انتقال الماس", callback_data=f"acctransfer|{user_id}"))
     markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
-    return text, markup
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-@bot.message_handler(commands=["account", "حساب"])
-def cmd_account(message):
-    user_id = message.from_user.id
-    if not get_user(user_id):
-        bot.reply_to(message, "اول /start بزن.")
-        return
-    text, markup = build_account_view(user_id, get_display_name(message.from_user))
-    bot.reply_to(message, text, reply_markup=markup)
-
-# ================== رتبه‌بندی ==================
-@bot.message_handler(commands=["rank", "رتبه‌بندی"])
-def cmd_rank(message):
-    top = get_top_users()
-    if not top:
-        bot.reply_to(message, "هنوز کاربری ثبت‌نام نکرده.")
-        return
-
-    text = "🏆 رتبه‌بندی بر اساس الماس\n\n"
-    for idx, (user_id, username, diamonds) in enumerate(top, 1):
-        name = f"{username}" if username else f"کاربر {user_id}"
-        text += f"{idx}. {name} — 💎 {diamonds}\n"
-
-    markup = main_menu_markup()
-    bot.reply_to(message, text, reply_markup=markup)
-
-@bot.message_handler(func=lambda m: m.text and m.text.strip() in ["رنک", "رتبه بندی"])
-def text_rank(message):
-    cmd_rank(message)
-
-# ================== کالبک‌های عمومی ==================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("showaccount|"))
-def handle_show_account(call):
-    owner_id = int(call.data.split("|")[1])
-    if call.from_user.id != owner_id:
-        bot.answer_callback_query(call.id, "این حساب متعلق به تو نیست.", show_alert=True)
-        return
-    bot.answer_callback_query(call.id)
-    text, markup = build_account_view(owner_id, get_display_name(call.from_user))
-    safe_send_message(call.message.chat.id, text, reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("showreferral|"))
+# ================== بخش زیرمجموعه ==================
+@bot.callback_query_handler(func=lambda call: call.data == "showreferral")
 def handle_show_referral(call):
-    owner_id = int(call.data.split("|")[1])
-    if call.from_user.id != owner_id:
-        bot.answer_callback_query(call.id, "این بخش متعلق به تو نیست.", show_alert=True)
-        return
     bot.answer_callback_query(call.id)
-    user = get_user(owner_id)
+    user_id = call.from_user.id
+    user = get_user(user_id)
+    if not user:
+        bot.send_message(call.message.chat.id, "اول /start بزن.")
+        return
     ref_count = user[4]
-    link = f"https://t.me/{bot.get_me().username}?start={owner_id}"
+    link = f"https://t.me/{bot.get_me().username}?start={user_id}"
     text = (
         f"👥 زیرمجموعه‌گیری\n"
         f"تعداد زیرمجموعه‌های شما: {ref_count}\n"
         f"پاداش هر زیرمجموعه: {REFERRAL_BONUS} 💎\n\n"
         f"لینک اختصاصی شما:\n{link}"
     )
-    markup = main_menu_markup()
-    safe_send_message(call.message.chat.id, text, reply_markup=markup)
+    markup = back_to_main_menu_markup()
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
+# ================== بخش وام ==================
+@bot.callback_query_handler(func=lambda call: call.data == "loanmenu")
+def loan_menu(call):
+    bot.answer_callback_query(call.id)
+    user_id = call.from_user.id
+    if not get_user(user_id):
+        bot.send_message(call.message.chat.id, "اول /start بزن.")
+        return
+
+    current = get_loan_balance(user_id)
+    remaining = LOAN_MAX - current
+
+    if remaining <= 0:
+        markup = back_to_main_menu_markup()
+        safe_edit_message(
+            f"💰 وام الماس\n\n"
+            f"💳 وام فعلی شما: {current} 💎 (از سقف {LOAN_MAX})\n"
+            f"⛔ به سقف مجاز رسیدی.\n"
+            f"با بردن شرط یا کازینو، ۱۰٪ اضافه از هر برد کسر و بدهیت کم میشه؛ بعدش دوباره می‌تونی وام بگیری.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup
+        )
+        return
+
+    safe_edit_message(
+        f"💰 وام الماس\n\n"
+        f"💳 وام فعلی شما: {current} 💎 (از سقف {LOAN_MAX})\n"
+        f"✅ می‌تونی تا {remaining} 💎 دیگه وام بگیری.\n\n"
+        f"⚠️ نکته: تا وقتی وامت صفر نشه، از هر برد شرط یا کازینو ۱۰٪ اضافه "
+        f"(در کنار ۱۰٪ مالیات همیشگی) بابت بازپرداخت وام کسر میشه.\n\n"
+        f"مبلغی که می‌خوای وام بگیری رو به عدد بفرست:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=None
+    )
+    bot.register_next_step_handler(call.message, loan_amount_step, user_id, remaining)
+
+def loan_amount_step(message, expected_user_id, remaining):
+    if message.from_user.id != expected_user_id:
+        return
+
+    if not message.text or not message.text.strip().isdigit():
+        msg = bot.reply_to(message, "لطفاً فقط عدد بفرست. مثال: 100000")
+        bot.register_next_step_handler(msg, loan_amount_step, expected_user_id, remaining)
+        return
+
+    amount = int(message.text.strip())
+    if amount <= 0:
+        msg = bot.reply_to(message, "مبلغ باید بزرگتر از صفر باشه. دوباره بفرست:")
+        bot.register_next_step_handler(msg, loan_amount_step, expected_user_id, remaining)
+        return
+    if amount > remaining:
+        msg = bot.reply_to(message, f"حداکثر می‌تونی {remaining} 💎 وام بگیری. یه عدد کمتر یا مساوی بفرست:")
+        bot.register_next_step_handler(msg, loan_amount_step, expected_user_id, remaining)
+        return
+
+    update_diamonds(expected_user_id, amount)
+    change_loan_balance(expected_user_id, amount)
+    markup = back_to_main_menu_markup()
+    bot.reply_to(
+        message,
+        f"✅ {amount} 💎 وام گرفتی و به موجودیت اضافه شد.\n"
+        f"💳 مجموع وام فعلی: {get_loan_balance(expected_user_id)} 💎\n"
+        f"💰 موجودی جدید: {get_balance(expected_user_id)} 💎",
+        reply_markup=markup
+    )
+
+# ================== بخش گردونه ==================
 @bot.callback_query_handler(func=lambda call: call.data == "spinwheel")
 def spin_wheel(call):
     user_id = call.from_user.id
@@ -424,7 +444,7 @@ def spin_wheel(call):
     set_last_spin(user_id, now)
 
     bot.answer_callback_query(call.id)
-    markup = main_menu_markup()
+    markup = back_to_main_menu_markup()
     safe_edit_message(
         f"🎡 گردونه چرخید!\n"
         f"💎 تبریک، {won} الماس بردی!\n"
@@ -435,72 +455,7 @@ def spin_wheel(call):
         reply_markup=markup
     )
 
-# ================== وام الماس ==================
-@bot.callback_query_handler(func=lambda call: call.data == "loanmenu")
-def loan_menu(call):
-    user_id = call.from_user.id
-    if not get_user(user_id):
-        bot.answer_callback_query(call.id, "اول /start بزن.", show_alert=True)
-        return
-
-    bot.answer_callback_query(call.id)
-    current = get_loan_balance(user_id)
-    remaining = LOAN_MAX - current
-
-    if remaining <= 0:
-        markup = main_menu_markup()
-        safe_send_message(
-            call.message.chat.id,
-            f"💰 وام الماس\n\n"
-            f"💳 وام فعلی شما: {current} 💎 (از سقف {LOAN_MAX})\n"
-            f"⛔ به سقف مجاز رسیدی.\n"
-            f"با بردن شرط یا کازینو، ۱۰٪ اضافه از هر برد کسر و بدهیت کم میشه؛ بعدش دوباره می‌تونی وام بگیری.",
-            reply_markup=markup
-        )
-        return
-
-    msg = safe_send_message(
-        call.message.chat.id,
-        f"💰 وام الماس\n\n"
-        f"💳 وام فعلی شما: {current} 💎 (از سقف {LOAN_MAX})\n"
-        f"✅ می‌تونی تا {remaining} 💎 دیگه وام بگیری.\n\n"
-        f"⚠️ نکته: تا وقتی وامت صفر نشه، از هر برد شرط یا کازینو ۱۰٪ اضافه "
-        f"(در کنار ۱۰٪ مالیات همیشگی) بابت بازپرداخت وام کسر میشه.\n\n"
-        f"مبلغی که می‌خوای وام بگیری رو به عدد بفرست:"
-    )
-    if msg:
-        bot.register_next_step_handler(msg, loan_amount_step, user_id, remaining)
-
-def loan_amount_step(message, expected_user_id, remaining):
-    if message.from_user.id != expected_user_id:
-        return
-
-    if not message.text or not message.text.strip().isdigit():
-        msg = bot.reply_to(message, "لطفاً فقط عدد بفرست. مثال: 100000")
-        bot.register_next_step_handler(msg, loan_amount_step, expected_user_id, remaining)
-        return
-
-    amount = int(message.text.strip())
-    if amount <= 0:
-        msg = bot.reply_to(message, "مبلغ باید بزرگتر از صفر باشه. دوباره بفرست:")
-        bot.register_next_step_handler(msg, loan_amount_step, expected_user_id, remaining)
-        return
-    if amount > remaining:
-        msg = bot.reply_to(message, f"حداکثر می‌تونی {remaining} 💎 وام بگیری. یه عدد کمتر یا مساوی بفرست:")
-        bot.register_next_step_handler(msg, loan_amount_step, expected_user_id, remaining)
-        return
-
-    update_diamonds(expected_user_id, amount)
-    change_loan_balance(expected_user_id, amount)
-    markup = main_menu_markup()
-    bot.reply_to(
-        message,
-        f"✅ {amount} 💎 وام گرفتی و به موجودیت اضافه شد.\n"
-        f"💳 مجموع وام فعلی: {get_loan_balance(expected_user_id)} 💎\n"
-        f"💰 موجودی جدید: {get_balance(expected_user_id)} 💎",
-        reply_markup=markup
-    )
-
+# ================== بخش راهنما ==================
 @bot.callback_query_handler(func=lambda call: call.data == "showhelp")
 def handle_show_help(call):
     bot.answer_callback_query(call.id)
@@ -537,10 +492,39 @@ def handle_show_help(call):
         "🏆 رتبه‌بندی برترین‌ها:\n"
         "بزن /rank یا بنویس رنک"
     )
-    markup = main_menu_markup()
-    safe_send_message(call.message.chat.id, text, reply_markup=markup)
+    markup = back_to_main_menu_markup()
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-# ================== انتقال الماس ==================
+# ================== بخش انتقال الماس (با دکمه برگشت) ==================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("acctransfer|"))
+def handle_account_transfer_button(call):
+    owner_id = int(call.data.split("|")[1])
+    if call.from_user.id != owner_id:
+        bot.answer_callback_query(call.id, "این حساب متعلق به تو نیست.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    
+    text = (
+        "🔹 روش ساده‌تر (توصیه می‌شه):\n"
+        "توی گروه، روی پیام کاربر مقصد ریپلای کن و بنویس:\n"
+        "انتقال الماس <مقدار>\n"
+        "(مثال: انتقال الماس 200)\n\n"
+        "🔹 یا از همینجا:\n"
+        "آیدی عددی مقصد و مقدار الماس رو اینطوری بفرست:\n"
+        "<آیدی عددی> <مقدار>\n"
+        "مثال: 123456789 20\n\n"
+        "⚠️ نکته: کاربر مقصد باید حتماً یه‌بار خودش توی پیوی بات /start زده باشه، "
+        "وگرنه بات نمی‌تونه بشناستش و همیشه خطای «استارت نزده» می‌ده."
+    )
+    markup = back_to_main_menu_markup()
+    safe_edit_message(
+        text,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=markup
+    )
+    bot.register_next_step_handler(call.message, ask_transfer_target, owner_id)
+
 def ask_transfer_target(message, owner_id):
     if message.from_user.id != owner_id:
         bot.register_next_step_handler(message, ask_transfer_target, owner_id)
@@ -560,7 +544,7 @@ def ask_transfer_target(message, owner_id):
             "\n\n⚠️ برای اینکه بات بتونه کاربری رو بشناسه، اون شخص باید حتماً یه‌بار "
             "توی پیوی خودِ بات دستور /start رو بزنه. فقط عضو گروه بودن کافی نیست."
         )
-    markup = main_menu_markup()
+    markup = back_to_main_menu_markup()
     bot.reply_to(message, result_msg, reply_markup=markup)
 
     if ok:
@@ -569,27 +553,7 @@ def ask_transfer_target(message, owner_id):
         except Exception:
             pass
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("acctransfer|"))
-def handle_account_transfer_button(call):
-    owner_id = int(call.data.split("|")[1])
-    if call.from_user.id != owner_id:
-        bot.answer_callback_query(call.id, "این حساب متعلق به تو نیست.", show_alert=True)
-        return
-    bot.answer_callback_query(call.id)
-    msg = safe_send_message(
-        call.message.chat.id,
-        "🔹 روش ساده‌تر (توصیه می‌شه):\n"
-        "توی گروه، روی پیام کاربر مقصد ریپلای کن و بنویس:\n"
-        "انتقال الماس <مقدار>\n(مثال: انتقال الماس 200)\n\n"
-        "🔹 یا از همینجا:\n"
-        "آیدی عددی مقصد و مقدار الماس رو اینطوری بفرست:\n<آیدی عددی> <مقدار>\nمثال: 123456789 20\n\n"
-        "⚠️ نکته: کاربر مقصد باید حتماً یه‌بار خودش توی پیوی بات /start زده باشه، "
-        "وگرنه بات نمی‌تونه بشناستش و همیشه خطای «استارت نزده» می‌ده."
-    )
-    if msg:
-        bot.register_next_step_handler(msg, ask_transfer_target, owner_id)
-
-# ================== دستورات ادمین (اصلاح شده با re.search) ==================
+# ================== دستورات ادمین ==================
 @bot.message_handler(func=lambda m: m.text and re.search(r"افزودن\s+الماس\s+(\d+)", m.text))
 def text_add_diamonds(message):
     if message.from_user.id not in ADMIN_IDS:
@@ -614,7 +578,7 @@ def text_add_diamonds(message):
         return
 
     update_diamonds(target_id, amount)
-    markup = main_menu_markup()
+    markup = back_to_main_menu_markup()
     bot.reply_to(message, f"✅ {amount} 💎 به کاربر {target_id} اضافه شد.\nموجودی فعلی: {get_balance(target_id)} 💎", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text and re.search(r"کم\s*کردن\s+الماس\s+(\d+)", m.text))
@@ -642,10 +606,9 @@ def text_remove_diamonds(message):
 
     deduct = min(amount, get_balance(target_id))
     update_diamonds(target_id, -deduct)
-    markup = main_menu_markup()
+    markup = back_to_main_menu_markup()
     bot.reply_to(message, f"✅ {deduct} 💎 از کاربر {target_id} کم شد.\nموجودی فعلی: {get_balance(target_id)} 💎", reply_markup=markup)
 
-# ================== انتقال معمولی ==================
 def perform_transfer(sender_id, target_id, amount):
     if amount <= 0:
         return False, "مقدار باید بزرگتر از صفر باشه."
@@ -675,7 +638,7 @@ def cmd_transfer(message):
     amount = int(parts[1])
     target_id = message.reply_to_message.from_user.id
     ok, msg = perform_transfer(sender_id, target_id, amount)
-    markup = main_menu_markup()
+    markup = back_to_main_menu_markup()
     bot.reply_to(message, msg, reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text and re.search(r"انتقال\s+الماس\s+(\d+)", m.text))
@@ -695,7 +658,7 @@ def text_transfer(message):
     amount = int(match.group(1))
     target_id = message.reply_to_message.from_user.id
     ok, msg = perform_transfer(sender_id, target_id, amount)
-    markup = main_menu_markup()
+    markup = back_to_main_menu_markup()
     bot.reply_to(message, msg, reply_markup=markup)
 
 # ================== شرط متنی ==================
@@ -709,7 +672,7 @@ def check_bet_timeout(bet_id):
 
     update_diamonds(creator_id, amount)
     set_bet_status(bet_id, "timeout")
-    markup = main_menu_markup()
+    markup = back_to_main_menu_markup()
     safe_edit_message(
         f"⏱ زمان تموم شد!\n"
         f"هیچ‌کس ظرف {JOIN_TIMEOUT_SECONDS} ثانیه به شرط {creator_name} نپیوست.\n"
@@ -815,7 +778,7 @@ def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
         f"{extra_line}"
         f"✅ مبلغ نهایی برنده: {payout if real_winner_id is not None else '—'}"
     )
-    markup = main_menu_markup()
+    markup = back_to_main_menu_markup()
     safe_edit_message(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
 
 @bot.callback_query_handler(
@@ -849,7 +812,7 @@ def handle_callback(call):
             return
         update_diamonds(creator_id, amount)
         set_bet_status(bet_id, "cancelled")
-        markup = main_menu_markup()
+        markup = back_to_main_menu_markup()
         safe_edit_message(
             f"❌ شرط توسط {creator_name} لغو شد.\nمبلغ ({amount} 💎) برگردونده شد.",
             chat_id=chat_id, message_id=message_id, reply_markup=markup,
@@ -881,7 +844,7 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, "شرط با ربات شروع شد. نتیجه اعلام شد.")
         return
 
-# ================== کازینو ==================
+# ================== بخش کازینو (با تنظیمات دقیق) ==================
 CASINO_GAMES = {
     "dice": "🎲",
     "dart": "🎯",
@@ -901,11 +864,21 @@ CASINO_GAME_NAMES = {
 CASINO_BET_PRESETS = [10, 50, 100, 500, 1000]
 
 def casino_games_keyboard():
+    """صفحه اول کازینو - فقط لیست بازی‌ها (بدون دکمه خانه)"""
     markup = types.InlineKeyboardMarkup()
     for key, emoji in CASINO_GAMES.items():
         markup.add(types.InlineKeyboardButton(f"{emoji} {CASINO_GAME_NAMES[key]}", callback_data=f"cgame|{key}"))
-    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     return markup
+
+@bot.callback_query_handler(func=lambda call: call.data == "casinomenu")
+def casino_from_main_menu(call):
+    bot.answer_callback_query(call.id)
+    safe_edit_message(
+        "🎰 به کازینو خوش اومدی!\nیکی از بازی‌ها رو انتخاب کن:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=casino_games_keyboard()
+    )
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "کازینو")
 def casino_panel(message):
@@ -934,7 +907,6 @@ def casino_game_select(call):
     ])
     markup.row(types.InlineKeyboardButton("✏️ مبلغ دلخواه", callback_data=f"ccustom|{game_key}"))
     markup.row(types.InlineKeyboardButton("🔙 بازگشت", callback_data="cback"))
-    markup.row(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
 
     safe_edit_message(
         f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]} انتخاب شد.\n💎 مبلغ شرط رو انتخاب کن:",
@@ -965,12 +937,13 @@ def check_casino_timeout(msg_id):
         if msg_id in casino_timers:
             del casino_timers[msg_id]
 
-    markup = main_menu_markup()
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🎰 بازگشت به کازینو", callback_data="casinoback"))
     safe_edit_message(
         f"⏱ زمان تموم شد!\n"
         f"هیچ‌کس ظرف {JOIN_TIMEOUT_SECONDS} ثانیه به بازی {game['player1']['name']} نپیوست.\n"
         f"💎 مبلغ ({game['bet']}) به سازنده برگردونده شد.",
-        chat_id=game["chat_id"], message_id=msg_id, reply_markup=markup,
+        chat_id=game["chat_id"], message_id=msg_id, reply_markup=markup
     )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("cbet|"))
@@ -989,10 +962,14 @@ def casino_bet_select(call):
     bot.answer_callback_query(call.id)
     update_diamonds(user.id, -amount)
 
+    # صفحه منتظر حریف با سه دکمه (بدون برگشت)
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"))
-    markup.add(types.InlineKeyboardButton("🤖 بازی با ربات", callback_data="cbotplay"))
-    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+    markup.row(
+        types.InlineKeyboardButton("❌ لغو بازی", callback_data=f"ccancel|{call.message.message_id}"),
+        types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"),
+    )
+    markup.row(types.InlineKeyboardButton("🤖 بازی با ربات", callback_data="cbotplay"))
+
     text = (
         f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]}\n"
         f"💎 مبلغ شرط: {amount}\n\n"
@@ -1016,6 +993,49 @@ def casino_bet_select(call):
         timer = threading.Timer(JOIN_TIMEOUT_SECONDS, check_casino_timeout, args=[msg_id])
         casino_timers[msg_id] = timer
         timer.start()
+
+# ================== لغو بازی کازینو ==================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ccancel|"))
+def casino_cancel(call):
+    msg_id = int(call.data.split("|")[1])
+    user_id = call.from_user.id
+
+    with casino_lock:
+        game = active_casino_games.get(msg_id)
+        if not game:
+            bot.answer_callback_query(call.id, "این بازی دیگه معتبر نیست.", show_alert=True)
+            return
+        if game["player2"] is not None:
+            bot.answer_callback_query(call.id, "بازی شروع شده، نمی‌توان لغو کرد.", show_alert=True)
+            return
+        if user_id != game["player1"]["id"]:
+            bot.answer_callback_query(call.id, "فقط سازنده می‌تونه بازی رو لغو کنه.", show_alert=True)
+            return
+
+        update_diamonds(game["player1"]["id"], game["bet"])
+        del active_casino_games[msg_id]
+        if msg_id in casino_timers:
+            casino_timers[msg_id].cancel()
+            del casino_timers[msg_id]
+
+    bot.answer_callback_query(call.id, "بازی لغو شد.")
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🎰 بازگشت به کازینو", callback_data="casinoback"))
+    safe_edit_message(
+        f"❌ بازی لغو شد.\n💎 مبلغ ({game['bet']}) به شما برگردانده شد.",
+        chat_id=game["chat_id"], message_id=msg_id, reply_markup=markup
+    )
+
+# ================== بازگشت به لیست کازینو ==================
+@bot.callback_query_handler(func=lambda call: call.data == "casinoback")
+def casino_back_to_list(call):
+    bot.answer_callback_query(call.id)
+    safe_edit_message(
+        "🎰 به کازینو خوش اومدی!\nیکی از بازی‌ها رو انتخاب کن:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=casino_games_keyboard()
+    )
 
 # ================== مبلغ دلخواه کازینو ==================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("ccustom|"))
@@ -1053,10 +1073,14 @@ def casino_custom_amount_step(message, game_key, expected_user_id, panel_msg_id)
 
     update_diamonds(user.id, -amount)
 
+    # صفحه منتظر حریف با سه دکمه (بدون برگشت)
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"))
-    markup.add(types.InlineKeyboardButton("🤖 بازی با ربات", callback_data="cbotplay"))
-    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+    markup.row(
+        types.InlineKeyboardButton("❌ لغو بازی", callback_data=f"ccancel|{panel_msg_id}"),
+        types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"),
+    )
+    markup.row(types.InlineKeyboardButton("🤖 بازی با ربات", callback_data="cbotplay"))
+
     text = (
         f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]}\n"
         f"💎 مبلغ شرط: {amount}\n\n"
@@ -1118,7 +1142,7 @@ def casino_join(call):
     bot.answer_callback_query(call.id)
     emoji = CASINO_GAMES[game["game"]]
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+    markup.add(types.InlineKeyboardButton("🎰 بازگشت به کازینو", callback_data="casinoback"))
     safe_edit_message(
         f"{emoji} بازی شروع شد!\n"
         f"⚔️ {game['player1']['name']} در برابر {game['player2']['name']}\n"
@@ -1152,7 +1176,7 @@ def casino_play_vs_bot(call):
     bot.answer_callback_query(call.id)
     emoji = CASINO_GAMES[game["game"]]
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+    markup.add(types.InlineKeyboardButton("🎰 بازگشت به کازینو", callback_data="casinoback"))
     safe_edit_message(
         f"{emoji} بازی با ربات شروع شد!\n"
         f"⚔️ {game['player1']['name']} در برابر 🤖 ربات\n"
@@ -1161,7 +1185,7 @@ def casino_play_vs_bot(call):
         chat_id=game["chat_id"], message_id=msg_id, reply_markup=markup
     )
 
-# ================== دریافت دایس ==================
+# ================== دریافت دایس و نتیجه نهایی کازینو ==================
 @bot.message_handler(content_types=["dice"])
 def handle_dice_throw(message):
     to_finalize = None
@@ -1266,8 +1290,63 @@ def finalize_casino_game(msg_id):
             f"✅ مبلغ نهایی برنده: {final_amount if final_amount is not None else '—'}"
         )
 
-    markup = main_menu_markup()
-    safe_edit_message(result_text, chat_id=chat_id, message_id=msg_id, reply_markup=markup)
+    # **صفحه نتیجه: بدون هیچ دکمه‌ای**
+    safe_edit_message(result_text, chat_id=chat_id, message_id=msg_id, reply_markup=None)
+
+# ================== رتبه‌بندی ==================
+@bot.message_handler(commands=["rank", "رتبه‌بندی"])
+def cmd_rank(message):
+    top = get_top_users()
+    if not top:
+        bot.reply_to(message, "هنوز کاربری ثبت‌نام نکرده.")
+        return
+
+    text = "🏆 رتبه‌بندی بر اساس الماس\n\n"
+    for idx, (user_id, username, diamonds) in enumerate(top, 1):
+        name = f"{username}" if username else f"کاربر {user_id}"
+        text += f"{idx}. {name} — 💎 {diamonds}\n"
+
+    markup = back_to_main_menu_markup()
+    bot.reply_to(message, text, reply_markup=markup)
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip() in ["رنک", "رتبه بندی"])
+def text_rank(message):
+    cmd_rank(message)
+
+# ================== موجودی ==================
+@bot.message_handler(commands=["balance", "موجودی"])
+def cmd_balance(message):
+    show_balance(message)
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "موجودی")
+def text_balance(message):
+    show_balance(message)
+
+def show_balance(message):
+    user_id = message.from_user.id
+    if not get_user(user_id):
+        bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
+        return
+
+    if message.reply_to_message:
+        target_id = message.reply_to_message.from_user.id
+        if not get_user(target_id):
+            bot.reply_to(message, "این کاربر هنوز /start نزده، نمی‌تونم موجودیش رو ببینم.")
+            return
+        target_name = get_display_name(message.reply_to_message.from_user)
+        balance = get_balance(target_id)
+        text = f"💎 موجودی الماس {target_name}"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
+        markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+        bot.reply_to(message, text, reply_markup=markup)
+    else:
+        balance = get_balance(user_id)
+        text = "💎 موجودی شما"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
+        markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+        bot.reply_to(message, text, reply_markup=markup)
 
 # ================== Webhook ==================
 @app.route("/", methods=["GET"])
