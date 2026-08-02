@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-بات شرط‌بندی الماس با Webhook (مناسب برای Render رایگان)
-نسخه‌ی اصلاح‌شده با رفع باگ‌ها و بهبود عملکرد
+بات شرط‌بندی الماس با Webhook (نسخه نهایی - رفع قفل دیتابیس، دکمه برگشت، ویرایش پیام)
 """
 
 import sqlite3
@@ -17,12 +16,12 @@ from telebot import types
 
 # ================== تنظیمات ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "توکن-خودت-رو-اینجا-بذار")
-ADMIN_IDS = [8904869158]  # آیدی عددی ادمین‌ها
+ADMIN_IDS = [8904869158]  # آیدی عددی خود را اینجا قرار دهید
 START_DIAMONDS = 10000
 REFERRAL_BONUS = 250000
 TAX_RATE = 0.10
 TAX_RECEIVER_ID = ADMIN_IDS[0]
-JOIN_TIMEOUT_SECONDS = 60  # قانون ۶۰ ثانیه
+JOIN_TIMEOUT_SECONDS = 60
 
 SPIN_MIN = 5000
 SPIN_MAX = 250000
@@ -35,18 +34,20 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 DB_PATH = "diamonds.db"
 
-# لاگ‌گیری برای اشکال‌زدایی
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # ================== قفل‌های سراسری ==================
 db_lock = threading.Lock()
 casino_lock = threading.Lock()
-active_casino_games = {}      # key: message_id, value: dict
-casino_timers = {}            # key: message_id, value: Timer
+active_casino_games = {}
+casino_timers = {}
 
 # ================== دیتابیس ==================
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    # فعال‌سازی WAL برای جلوگیری از قفل‌شدن همزمان
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -78,34 +79,43 @@ def get_conn():
     return conn
 
 def get_user(user_id):
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
-    conn.close()
-    return row
+    with db_lock:
+        conn = get_conn()
+        try:
+            row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+            return row
+        finally:
+            conn.close()
 
 def create_user(user_id, username, referred_by=None):
     with db_lock:
         conn = get_conn()
-        conn.execute(
-            "INSERT INTO users (user_id, username, diamonds, referred_by) VALUES (?,?,?,?)",
-            (user_id, username, START_DIAMONDS, referred_by),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                "INSERT INTO users (user_id, username, diamonds, referred_by) VALUES (?,?,?,?)",
+                (user_id, username, START_DIAMONDS, referred_by),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 def update_diamonds(user_id, amount):
     with db_lock:
         conn = get_conn()
-        conn.execute("UPDATE users SET diamonds = diamonds + ? WHERE user_id=?", (amount, user_id))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("UPDATE users SET diamonds = diamonds + ? WHERE user_id=?", (amount, user_id))
+            conn.commit()
+        finally:
+            conn.close()
 
 def add_ref_count(user_id):
     with db_lock:
         conn = get_conn()
-        conn.execute("UPDATE users SET ref_count = ref_count + 1 WHERE user_id=?", (user_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("UPDATE users SET ref_count = ref_count + 1 WHERE user_id=?", (user_id,))
+            conn.commit()
+        finally:
+            conn.close()
 
 def get_balance(user_id):
     row = get_user(user_id)
@@ -117,36 +127,46 @@ def get_display_name(user):
 def create_bet(creator_id, creator_name, amount, chat_id, message_id):
     with db_lock:
         conn = get_conn()
-        cur = conn.execute(
-            "INSERT INTO bets (creator_id, creator_name, amount, chat_id, message_id, status) VALUES (?,?,?,?,?,'pending')",
-            (creator_id, creator_name, amount, chat_id, message_id),
-        )
-        conn.commit()
-        bet_id = cur.lastrowid
-        conn.close()
-        return bet_id
+        try:
+            cur = conn.execute(
+                "INSERT INTO bets (creator_id, creator_name, amount, chat_id, message_id, status) VALUES (?,?,?,?,?,'pending')",
+                (creator_id, creator_name, amount, chat_id, message_id),
+            )
+            conn.commit()
+            bet_id = cur.lastrowid
+            return bet_id
+        finally:
+            conn.close()
 
 def get_bet(bet_id):
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM bets WHERE bet_id=?", (bet_id,)).fetchone()
-    conn.close()
-    return row
+    with db_lock:
+        conn = get_conn()
+        try:
+            row = conn.execute("SELECT * FROM bets WHERE bet_id=?", (bet_id,)).fetchone()
+            return row
+        finally:
+            conn.close()
 
 def set_bet_status(bet_id, status):
     with db_lock:
         conn = get_conn()
-        conn.execute("UPDATE bets SET status=? WHERE bet_id=?", (status, bet_id))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("UPDATE bets SET status=? WHERE bet_id=?", (status, bet_id))
+            conn.commit()
+        finally:
+            conn.close()
 
 def get_top_users(limit=10):
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT user_id, username, diamonds FROM users ORDER BY diamonds DESC LIMIT ?",
-        (limit,)
-    ).fetchall()
-    conn.close()
-    return rows
+    with db_lock:
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT user_id, username, diamonds FROM users ORDER BY diamonds DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+            return rows
+        finally:
+            conn.close()
 
 def get_loan_balance(user_id):
     row = get_user(user_id)
@@ -155,12 +175,14 @@ def get_loan_balance(user_id):
 def change_loan_balance(user_id, delta):
     with db_lock:
         conn = get_conn()
-        conn.execute(
-            "UPDATE users SET loan_balance = MAX(0, loan_balance + ?) WHERE user_id=?",
-            (delta, user_id),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                "UPDATE users SET loan_balance = MAX(0, loan_balance + ?) WHERE user_id=?",
+                (delta, user_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 def get_last_spin(user_id):
     row = get_user(user_id)
@@ -169,9 +191,11 @@ def get_last_spin(user_id):
 def set_last_spin(user_id, ts):
     with db_lock:
         conn = get_conn()
-        conn.execute("UPDATE users SET last_spin=? WHERE user_id=?", (ts, user_id))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("UPDATE users SET last_spin=? WHERE user_id=?", (ts, user_id))
+            conn.commit()
+        finally:
+            conn.close()
 
 def calculate_payout(winner_id, pool):
     admin_tax = int(pool * TAX_RATE)
@@ -187,7 +211,13 @@ def calculate_payout(winner_id, pool):
         final_payout = 0
     return final_payout, admin_tax, loan_repay
 
-# ================== توابع کمکی برای ویرایش امن پیام ==================
+# ================== دکمه بازگشت ==================
+def main_menu_markup():
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+    return markup
+
+# ================== توابع ویرایش امن ==================
 def safe_edit_message(text, chat_id, message_id, reply_markup=None):
     try:
         bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup)
@@ -203,7 +233,7 @@ def safe_send_message(chat_id, text, reply_markup=None):
         logging.error(f"خطا در ارسال پیام: {e}")
         return None
 
-# ================== هندلرها ==================
+# ================== هندلر start ==================
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
     user_id = message.from_user.id
@@ -237,6 +267,24 @@ def cmd_start(message):
 
     safe_send_message(message.chat.id, "به بات شرط‌بندی خوش اومدید🌹", reply_markup=markup)
 
+# ================== کالبک منوی اصلی ==================
+@bot.callback_query_handler(func=lambda call: call.data == "mainmenu")
+def main_menu(call):
+    bot.answer_callback_query(call.id)
+    user_id = call.from_user.id
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data=f"showaccount|{user_id}"))
+    markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data=f"showreferral|{user_id}"))
+    markup.add(types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu"))
+    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس💎", callback_data="spinwheel"))
+    markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
+    safe_edit_message(
+        "به بات شرط‌بندی خوش اومدید🌹",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=markup
+    )
+
 # ================== موجودی ==================
 @bot.message_handler(commands=["balance", "موجودی"])
 def cmd_balance(message):
@@ -262,12 +310,14 @@ def show_balance(message):
         text = f"💎 موجودی الماس {target_name}"
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
+        markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
         bot.reply_to(message, text, reply_markup=markup)
     else:
         balance = get_balance(user_id)
         text = "💎 موجودی شما"
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
+        markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
         bot.reply_to(message, text, reply_markup=markup)
 
 def build_account_view(user_id, display_name):
@@ -283,6 +333,7 @@ def build_account_view(user_id, display_name):
     )
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("💸 انتقال الماس", callback_data=f"acctransfer|{user_id}"))
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     return text, markup
 
 @bot.message_handler(commands=["account", "حساب"])
@@ -307,7 +358,8 @@ def cmd_rank(message):
         name = f"{username}" if username else f"کاربر {user_id}"
         text += f"{idx}. {name} — 💎 {diamonds}\n"
 
-    bot.reply_to(message, text)
+    markup = main_menu_markup()
+    bot.reply_to(message, text, reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip() in ["رنک", "رتبه بندی"])
 def text_rank(message):
@@ -340,7 +392,8 @@ def handle_show_referral(call):
         f"پاداش هر زیرمجموعه: {REFERRAL_BONUS} 💎\n\n"
         f"لینک اختصاصی شما:\n{link}"
     )
-    safe_send_message(call.message.chat.id, text)
+    markup = main_menu_markup()
+    safe_send_message(call.message.chat.id, text, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "spinwheel")
 def spin_wheel(call):
@@ -371,12 +424,15 @@ def spin_wheel(call):
     set_last_spin(user_id, now)
 
     bot.answer_callback_query(call.id)
-    safe_send_message(
-        call.message.chat.id,
+    markup = main_menu_markup()
+    safe_edit_message(
         f"🎡 گردونه چرخید!\n"
         f"💎 تبریک، {won} الماس بردی!\n"
         f"💰 موجودی جدید: {get_balance(user_id)} 💎\n\n"
-        f"⏱ نوبت بعدی: {SPIN_COOLDOWN_HOURS} ساعت دیگه"
+        f"⏱ نوبت بعدی: {SPIN_COOLDOWN_HOURS} ساعت دیگه",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=markup
     )
 
 # ================== وام الماس ==================
@@ -392,12 +448,14 @@ def loan_menu(call):
     remaining = LOAN_MAX - current
 
     if remaining <= 0:
+        markup = main_menu_markup()
         safe_send_message(
             call.message.chat.id,
             f"💰 وام الماس\n\n"
             f"💳 وام فعلی شما: {current} 💎 (از سقف {LOAN_MAX})\n"
             f"⛔ به سقف مجاز رسیدی.\n"
-            f"با بردن شرط یا کازینو، ۱۰٪ اضافه از هر برد کسر و بدهیت کم میشه؛ بعدش دوباره می‌تونی وام بگیری."
+            f"با بردن شرط یا کازینو، ۱۰٪ اضافه از هر برد کسر و بدهیت کم میشه؛ بعدش دوباره می‌تونی وام بگیری.",
+            reply_markup=markup
         )
         return
 
@@ -434,11 +492,13 @@ def loan_amount_step(message, expected_user_id, remaining):
 
     update_diamonds(expected_user_id, amount)
     change_loan_balance(expected_user_id, amount)
+    markup = main_menu_markup()
     bot.reply_to(
         message,
         f"✅ {amount} 💎 وام گرفتی و به موجودیت اضافه شد.\n"
         f"💳 مجموع وام فعلی: {get_loan_balance(expected_user_id)} 💎\n"
-        f"💰 موجودی جدید: {get_balance(expected_user_id)} 💎"
+        f"💰 موجودی جدید: {get_balance(expected_user_id)} 💎",
+        reply_markup=markup
     )
 
 @bot.callback_query_handler(func=lambda call: call.data == "showhelp")
@@ -477,7 +537,8 @@ def handle_show_help(call):
         "🏆 رتبه‌بندی برترین‌ها:\n"
         "بزن /rank یا بنویس رنک"
     )
-    safe_send_message(call.message.chat.id, text)
+    markup = main_menu_markup()
+    safe_send_message(call.message.chat.id, text, reply_markup=markup)
 
 # ================== انتقال الماس ==================
 def ask_transfer_target(message, owner_id):
@@ -499,7 +560,8 @@ def ask_transfer_target(message, owner_id):
             "\n\n⚠️ برای اینکه بات بتونه کاربری رو بشناسه، اون شخص باید حتماً یه‌بار "
             "توی پیوی خودِ بات دستور /start رو بزنه. فقط عضو گروه بودن کافی نیست."
         )
-    bot.reply_to(message, result_msg)
+    markup = main_menu_markup()
+    bot.reply_to(message, result_msg, reply_markup=markup)
 
     if ok:
         try:
@@ -527,7 +589,8 @@ def handle_account_transfer_button(call):
     if msg:
         bot.register_next_step_handler(msg, ask_transfer_target, owner_id)
 
-@bot.message_handler(func=lambda m: m.text and re.match(r"^افزودن\s+الماس\s+\d+$", m.text.strip()))
+# ================== دستورات ادمین (اصلاح شده با re.search) ==================
+@bot.message_handler(func=lambda m: m.text and re.search(r"افزودن\s+الماس\s+(\d+)", m.text))
 def text_add_diamonds(message):
     if message.from_user.id not in ADMIN_IDS:
         bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس اضافه کنه.")
@@ -536,7 +599,11 @@ def text_add_diamonds(message):
         bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nافزودن الماس <مقدار>\nمثال: افزودن الماس 50")
         return
 
-    amount = int(re.search(r"\d+", message.text).group())
+    match = re.search(r"افزودن\s+الماس\s+(\d+)", message.text)
+    if not match:
+        bot.reply_to(message, "فرمت اشتباه است.")
+        return
+    amount = int(match.group(1))
     if amount <= 0:
         bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
         return
@@ -547,9 +614,10 @@ def text_add_diamonds(message):
         return
 
     update_diamonds(target_id, amount)
-    bot.reply_to(message, f"✅ {amount} 💎 به کاربر {target_id} اضافه شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
+    markup = main_menu_markup()
+    bot.reply_to(message, f"✅ {amount} 💎 به کاربر {target_id} اضافه شد.\nموجودی فعلی: {get_balance(target_id)} 💎", reply_markup=markup)
 
-@bot.message_handler(func=lambda m: m.text and re.match(r"^کم\s*کردن\s+الماس\s+\d+$", m.text.strip()))
+@bot.message_handler(func=lambda m: m.text and re.search(r"کم\s*کردن\s+الماس\s+(\d+)", m.text))
 def text_remove_diamonds(message):
     if message.from_user.id not in ADMIN_IDS:
         bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس کم کنه.")
@@ -558,7 +626,11 @@ def text_remove_diamonds(message):
         bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nکم کردن الماس <مقدار>\nمثال: کم کردن الماس 50")
         return
 
-    amount = int(re.search(r"\d+", message.text).group())
+    match = re.search(r"کم\s*کردن\s+الماس\s+(\d+)", message.text)
+    if not match:
+        bot.reply_to(message, "فرمت اشتباه است.")
+        return
+    amount = int(match.group(1))
     if amount <= 0:
         bot.reply_to(message, "مقدار باید بزرگتر از صفر باشه.")
         return
@@ -570,8 +642,10 @@ def text_remove_diamonds(message):
 
     deduct = min(amount, get_balance(target_id))
     update_diamonds(target_id, -deduct)
-    bot.reply_to(message, f"✅ {deduct} 💎 از کاربر {target_id} کم شد.\nموجودی فعلی: {get_balance(target_id)} 💎")
+    markup = main_menu_markup()
+    bot.reply_to(message, f"✅ {deduct} 💎 از کاربر {target_id} کم شد.\nموجودی فعلی: {get_balance(target_id)} 💎", reply_markup=markup)
 
+# ================== انتقال معمولی ==================
 def perform_transfer(sender_id, target_id, amount):
     if amount <= 0:
         return False, "مقدار باید بزرگتر از صفر باشه."
@@ -601,9 +675,10 @@ def cmd_transfer(message):
     amount = int(parts[1])
     target_id = message.reply_to_message.from_user.id
     ok, msg = perform_transfer(sender_id, target_id, amount)
-    bot.reply_to(message, msg)
+    markup = main_menu_markup()
+    bot.reply_to(message, msg, reply_markup=markup)
 
-@bot.message_handler(func=lambda m: m.text and re.match(r"^انتقال\s+الماس\s+\d+$", m.text.strip()))
+@bot.message_handler(func=lambda m: m.text and re.search(r"انتقال\s+الماس\s+(\d+)", m.text))
 def text_transfer(message):
     sender_id = message.from_user.id
     if not get_user(sender_id):
@@ -613,10 +688,15 @@ def text_transfer(message):
         bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nانتقال الماس <مقدار>\nمثال: انتقال الماس 200")
         return
 
-    amount = int(re.search(r"\d+", message.text).group())
+    match = re.search(r"انتقال\s+الماس\s+(\d+)", message.text)
+    if not match:
+        bot.reply_to(message, "فرمت اشتباه است.")
+        return
+    amount = int(match.group(1))
     target_id = message.reply_to_message.from_user.id
     ok, msg = perform_transfer(sender_id, target_id, amount)
-    bot.reply_to(message, msg)
+    markup = main_menu_markup()
+    bot.reply_to(message, msg, reply_markup=markup)
 
 # ================== شرط متنی ==================
 def check_bet_timeout(bet_id):
@@ -629,11 +709,12 @@ def check_bet_timeout(bet_id):
 
     update_diamonds(creator_id, amount)
     set_bet_status(bet_id, "timeout")
+    markup = main_menu_markup()
     safe_edit_message(
         f"⏱ زمان تموم شد!\n"
         f"هیچ‌کس ظرف {JOIN_TIMEOUT_SECONDS} ثانیه به شرط {creator_name} نپیوست.\n"
         f"💎 مبلغ ({amount}) به سازنده برگردونده شد.",
-        chat_id=chat_id, message_id=message_id, reply_markup=None,
+        chat_id=chat_id, message_id=message_id, reply_markup=markup,
     )
 
 def start_bet_flow(message, amount):
@@ -670,6 +751,7 @@ def start_bet_flow(message, amount):
         types.InlineKeyboardButton("✅ پیوستن به شرط", callback_data=f"join|{bet_id}"),
     )
     markup.row(types.InlineKeyboardButton("🤖 شرط با ربات", callback_data=f"bot|{bet_id}"))
+    markup.row(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     safe_edit_message(sent.text, chat_id=message.chat.id, message_id=sent.message_id, reply_markup=markup)
 
     threading.Timer(JOIN_TIMEOUT_SECONDS, check_bet_timeout, args=[bet_id]).start()
@@ -682,9 +764,13 @@ def cmd_bet(message):
         return
     start_bet_flow(message, int(parts[1]))
 
-@bot.message_handler(func=lambda m: m.text and re.match(r"^شرط\s*بندی?\s+\d+$", m.text.strip()))
+@bot.message_handler(func=lambda m: m.text and re.search(r"شرط\s*بندی?\s+(\d+)", m.text))
 def text_bet(message):
-    amount = int(re.search(r"\d+", message.text).group())
+    match = re.search(r"شرط\s*بندی?\s+(\d+)", message.text)
+    if not match:
+        bot.reply_to(message, "فرمت اشتباه است. مثال: شرط بندی 20")
+        return
+    amount = int(match.group(1))
     start_bet_flow(message, amount)
 
 def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
@@ -729,7 +815,8 @@ def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
         f"{extra_line}"
         f"✅ مبلغ نهایی برنده: {payout if real_winner_id is not None else '—'}"
     )
-    safe_edit_message(text, chat_id=chat_id, message_id=message_id, reply_markup=None)
+    markup = main_menu_markup()
+    safe_edit_message(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
 
 @bot.callback_query_handler(
     func=lambda call: call.data == "pending" or call.data.split("|")[0] in ("cancel", "join", "bot")
@@ -762,9 +849,10 @@ def handle_callback(call):
             return
         update_diamonds(creator_id, amount)
         set_bet_status(bet_id, "cancelled")
+        markup = main_menu_markup()
         safe_edit_message(
             f"❌ شرط توسط {creator_name} لغو شد.\nمبلغ ({amount} 💎) برگردونده شد.",
-            chat_id=chat_id, message_id=message_id, reply_markup=None,
+            chat_id=chat_id, message_id=message_id, reply_markup=markup,
         )
         bot.answer_callback_query(call.id, "شرط لغو شد.")
         return
@@ -816,6 +904,7 @@ def casino_games_keyboard():
     markup = types.InlineKeyboardMarkup()
     for key, emoji in CASINO_GAMES.items():
         markup.add(types.InlineKeyboardButton(f"{emoji} {CASINO_GAME_NAMES[key]}", callback_data=f"cgame|{key}"))
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     return markup
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip() == "کازینو")
@@ -845,6 +934,7 @@ def casino_game_select(call):
     ])
     markup.row(types.InlineKeyboardButton("✏️ مبلغ دلخواه", callback_data=f"ccustom|{game_key}"))
     markup.row(types.InlineKeyboardButton("🔙 بازگشت", callback_data="cback"))
+    markup.row(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
 
     safe_edit_message(
         f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]} انتخاب شد.\n💎 مبلغ شرط رو انتخاب کن:",
@@ -870,18 +960,17 @@ def check_casino_timeout(msg_id):
         game = active_casino_games.get(msg_id)
         if not game or game["player2"] is not None:
             return
-        # برگرداندن پول به سازنده
         update_diamonds(game["player1"]["id"], game["bet"])
-        # حذف از لیست
         del active_casino_games[msg_id]
         if msg_id in casino_timers:
             del casino_timers[msg_id]
 
+    markup = main_menu_markup()
     safe_edit_message(
         f"⏱ زمان تموم شد!\n"
         f"هیچ‌کس ظرف {JOIN_TIMEOUT_SECONDS} ثانیه به بازی {game['player1']['name']} نپیوست.\n"
         f"💎 مبلغ ({game['bet']}) به سازنده برگردونده شد.",
-        chat_id=game["chat_id"], message_id=msg_id, reply_markup=None,
+        chat_id=game["chat_id"], message_id=msg_id, reply_markup=markup,
     )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("cbet|"))
@@ -898,11 +987,12 @@ def casino_bet_select(call):
         return
 
     bot.answer_callback_query(call.id)
-    update_diamonds(user.id, -amount)  # قفل کردن مبلغ سازنده
+    update_diamonds(user.id, -amount)
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"))
     markup.add(types.InlineKeyboardButton("🤖 بازی با ربات", callback_data="cbotplay"))
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     text = (
         f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]}\n"
         f"💎 مبلغ شرط: {amount}\n\n"
@@ -923,7 +1013,6 @@ def casino_bet_select(call):
             "score2": None,
             "vs_bot": False,
         }
-        # راه‌اندازی تایمر
         timer = threading.Timer(JOIN_TIMEOUT_SECONDS, check_casino_timeout, args=[msg_id])
         casino_timers[msg_id] = timer
         timer.start()
@@ -936,12 +1025,10 @@ def casino_custom_amount_prompt(call):
         bot.answer_callback_query(call.id, "اول /start بزن.", show_alert=True)
         return
     bot.answer_callback_query(call.id)
-    # ویرایش پیام فعلی به درخواست عدد
     safe_edit_message(
         "✏️ لطفاً مبلغ شرط رو به عدد بفرست (مثلاً 250):",
         chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None
     )
-    # ثبت مرحله بعد
     bot.register_next_step_handler(call.message, casino_custom_amount_step, game_key, call.from_user.id, call.message.message_id)
 
 def casino_custom_amount_step(message, game_key, expected_user_id, panel_msg_id):
@@ -962,22 +1049,20 @@ def casino_custom_amount_step(message, game_key, expected_user_id, panel_msg_id)
     user = message.from_user
     if get_balance(user.id) < amount:
         bot.reply_to(message, "💎 موجودی الماس شما کافی نیست!")
-        # برگشت به پنل؟ می‌توانیم پیام را ویرایش کنیم ولی اینجا ساده می‌گیریم
         return
 
     update_diamonds(user.id, -amount)
 
-    # اکنون پیام اصلی (panel_msg_id) را ویرایش می‌کنیم و بازی را راه‌اندازی می‌کنیم
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"))
     markup.add(types.InlineKeyboardButton("🤖 بازی با ربات", callback_data="cbotplay"))
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     text = (
         f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]}\n"
         f"💎 مبلغ شرط: {amount}\n\n"
         f"👤 بازیکن اول: {get_display_name(user)}\n"
         f"⏳ منتظر بازیکن دوم یا شروع بازی با ربات... (فرصت پیوستن: {JOIN_TIMEOUT_SECONDS} ثانیه)"
     )
-    # حذف پیام درخواست عدد (message) و ویرایش پنل
     try:
         bot.delete_message(message.chat.id, message.message_id)
     except Exception:
@@ -1026,19 +1111,20 @@ def casino_join(call):
 
         game["player2"] = {"id": user.id, "name": get_display_name(user)}
         update_diamonds(user.id, -game["bet"])
-        # لغو تایمر
         if msg_id in casino_timers:
             casino_timers[msg_id].cancel()
             del casino_timers[msg_id]
 
     bot.answer_callback_query(call.id)
     emoji = CASINO_GAMES[game["game"]]
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     safe_edit_message(
         f"{emoji} بازی شروع شد!\n"
         f"⚔️ {game['player1']['name']} در برابر {game['player2']['name']}\n"
         f"💎 مبلغ: {game['bet']}\n\n"
         f"🎲 حالا هر دو بازیکن باید خودشون {emoji} رو همینجا تو چت بفرستن!",
-        chat_id=game["chat_id"], message_id=msg_id, reply_markup=None
+        chat_id=game["chat_id"], message_id=msg_id, reply_markup=markup
     )
 
 # ================== بازی با ربات کازینو ==================
@@ -1059,26 +1145,27 @@ def casino_play_vs_bot(call):
 
         game["player2"] = {"id": None, "name": "🤖 ربات"}
         game["vs_bot"] = True
-        # لغو تایمر
         if msg_id in casino_timers:
             casino_timers[msg_id].cancel()
             del casino_timers[msg_id]
 
     bot.answer_callback_query(call.id)
     emoji = CASINO_GAMES[game["game"]]
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     safe_edit_message(
         f"{emoji} بازی با ربات شروع شد!\n"
         f"⚔️ {game['player1']['name']} در برابر 🤖 ربات\n"
         f"💎 مبلغ: {game['bet']}\n\n"
         f"🎲 حالا خودت {emoji} رو همینجا تو چت بفرست، بعدش ربات هم می‌ندازه!",
-        chat_id=game["chat_id"], message_id=msg_id, reply_markup=None
+        chat_id=game["chat_id"], message_id=msg_id, reply_markup=markup
     )
 
 # ================== دریافت دایس ==================
 @bot.message_handler(content_types=["dice"])
 def handle_dice_throw(message):
     to_finalize = None
-    bot_throw_needed = None  # (msg_id, chat_id, emoji)
+    bot_throw_needed = None
 
     with casino_lock:
         for msg_id, game in active_casino_games.items():
@@ -1099,7 +1186,6 @@ def handle_dice_throw(message):
                 continue
 
             if vs_bot and game["score1"] is not None and game["score2"] is None:
-                # ربات باید پرتاب کند
                 bot_throw_needed = (msg_id, game["chat_id"], emoji)
             elif game["score1"] is not None and game["score2"] is not None:
                 to_finalize = msg_id
@@ -1107,9 +1193,7 @@ def handle_dice_throw(message):
 
     if bot_throw_needed:
         b_msg_id, b_chat_id, b_emoji = bot_throw_needed
-        # ارسال دایس ربات و دریافت مقدار
         bot_dice = bot.send_dice(b_chat_id, emoji=b_emoji)
-        # مقدار را مستقیماً تنظیم می‌کنیم
         with casino_lock:
             game = active_casino_games.get(b_msg_id)
             if game and game["score2"] is None:
@@ -1124,7 +1208,6 @@ def finalize_casino_game(msg_id):
     with casino_lock:
         game = active_casino_games.pop(msg_id, None)
         if msg_id in casino_timers:
-            # اگر تایمر هنوز وجود دارد (احتمالاً به دلیل خطا) لغو می‌کنیم
             casino_timers[msg_id].cancel()
             del casino_timers[msg_id]
     if not game:
@@ -1137,12 +1220,10 @@ def finalize_casino_game(msg_id):
     bet = game["bet"]
     vs_bot = game.get("vs_bot", False)
 
-    # در صورتی که یکی از امتیازها None باشد (خطا) آن را ۰ در نظر بگیریم
     score1 = score1 if score1 is not None else 0
     score2 = score2 if score2 is not None else 0
 
     if score1 == score2:
-        # مساوی: برگشت پول به هر دو
         update_diamonds(player1["id"], bet)
         if not vs_bot:
             update_diamonds(player2["id"], bet)
@@ -1185,7 +1266,8 @@ def finalize_casino_game(msg_id):
             f"✅ مبلغ نهایی برنده: {final_amount if final_amount is not None else '—'}"
         )
 
-    safe_edit_message(result_text, chat_id=chat_id, message_id=msg_id, reply_markup=None)
+    markup = main_menu_markup()
+    safe_edit_message(result_text, chat_id=chat_id, message_id=msg_id, reply_markup=markup)
 
 # ================== Webhook ==================
 @app.route("/", methods=["GET"])
