@@ -19,10 +19,17 @@ from telebot import types
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "توکن-خودت-رو-اینجا-بذار")
 ADMIN_IDS = [8904869158]
 START_DIAMONDS = 10000
-REFERRAL_BONUS = 50000
+REFERRAL_BONUS = 250000
 TAX_RATE = 0.10
 TAX_RECEIVER_ID = ADMIN_IDS[0]
 JOIN_TIMEOUT_SECONDS = 60  # قانون ۶۰ ثانیه
+
+SPIN_MIN = 5000
+SPIN_MAX = 250000
+SPIN_COOLDOWN_HOURS = 24  # جلوگیری از چرخوندن پشت‌سرهم گردونه
+
+LOAN_MAX = 500000
+LOAN_TAX_RATE = 0.10  # کسر اضافی از هر برد تا وقتی وام صفر بشه
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -38,9 +45,18 @@ def get_conn():
             username TEXT,
             diamonds INTEGER DEFAULT 0,
             referred_by INTEGER,
-            ref_count INTEGER DEFAULT 0
+            ref_count INTEGER DEFAULT 0,
+            loan_balance INTEGER DEFAULT 0,
+            last_spin INTEGER DEFAULT 0
         )
     """)
+    # برای دیتابیس‌های قدیمی‌تر که این ستون‌ها رو ندارن
+    for col_def in ("loan_balance INTEGER DEFAULT 0", "last_spin INTEGER DEFAULT 0"):
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col_def}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS bets (
             bet_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,6 +152,52 @@ def get_top_users(limit=10):
     return rows
 
 
+def get_loan_balance(user_id):
+    row = get_user(user_id)
+    return row[5] if row else 0
+
+
+def change_loan_balance(user_id, delta):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE users SET loan_balance = MAX(0, loan_balance + ?) WHERE user_id=?",
+        (delta, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_last_spin(user_id):
+    row = get_user(user_id)
+    return row[6] if row else 0
+
+
+def set_last_spin(user_id, ts):
+    conn = get_conn()
+    conn.execute("UPDATE users SET last_spin=? WHERE user_id=?", (ts, user_id))
+    conn.commit()
+    conn.close()
+
+
+def calculate_payout(winner_id, pool):
+    """
+    از استخر جایزه (pool)، ۱۰٪ مالیات همیشگی کم میشه.
+    اگه برنده وام فعال داشته باشه، ۱۰٪ دیگه هم بابت بازپرداخت وام کم میشه
+    (نه بیشتر از باقیمونده‌ی وامش) و از بدهیش کسر میشه.
+    خروجی: (مبلغ نهایی برنده, مالیات ادمین, مبلغ بازپرداخت‌شده‌ی وام)
+    """
+    admin_tax = int(pool * TAX_RATE)
+    loan_repay = 0
+    loan_balance = get_loan_balance(winner_id)
+    if loan_balance > 0:
+        loan_cut = int(pool * LOAN_TAX_RATE)
+        loan_repay = min(loan_cut, loan_balance)
+        if loan_repay > 0:
+            change_loan_balance(winner_id, -loan_repay)
+    final_payout = pool - admin_tax - loan_repay
+    return final_payout, admin_tax, loan_repay
+
+
 # ================== هندلرها ==================
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -164,6 +226,8 @@ def cmd_start(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data=f"showaccount|{user_id}"))
     markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data=f"showreferral|{user_id}"))
+    markup.add(types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu"))
+    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس💎", callback_data="spinwheel"))
     markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
 
     caption = "به بات شرط‌بندی خوش اومدید🌹"
@@ -206,13 +270,14 @@ def show_balance(message):
 
 def build_account_view(user_id, display_name):
     user = get_user(user_id)
-    _, username, diamonds, referred_by, ref_count = user
+    _, username, diamonds, referred_by, ref_count, loan_balance, last_spin = user
     text = (
         f"👤 حساب کاربری\n"
         f"نام: {display_name}\n"
         f"آیدی عددی: {user_id}\n"
         f"💎 موجودی الماس: {diamonds}\n"
-        f"👥 تعداد زیرمجموعه (رفرال): {ref_count}"
+        f"👥 تعداد زیرمجموعه (رفرال): {ref_count}\n"
+        f"💳 وام فعلی: {loan_balance} 💎 (از سقف {LOAN_MAX})"
     )
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("💸 انتقال الماس", callback_data=f"acctransfer|{user_id}"))
@@ -279,6 +344,107 @@ def handle_show_referral(call):
     bot.send_message(call.message.chat.id, text)
 
 
+@bot.callback_query_handler(func=lambda call: call.data == "spinwheel")
+def spin_wheel(call):
+    user_id = call.from_user.id
+    if not get_user(user_id):
+        bot.answer_callback_query(call.id, "اول /start بزن.", show_alert=True)
+        return
+
+    now = int(time.time())
+    last_spin = get_last_spin(user_id)
+    cooldown = SPIN_COOLDOWN_HOURS * 3600
+    elapsed = now - last_spin
+
+    if elapsed < cooldown:
+        remaining = cooldown - elapsed
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        bot.answer_callback_query(
+            call.id,
+            f"⏳ گردونه هر {SPIN_COOLDOWN_HOURS} ساعت یه‌بار قابل چرخوندنه.\n"
+            f"تا نوبت بعدی: {hours} ساعت و {minutes} دقیقه مونده.",
+            show_alert=True
+        )
+        return
+
+    won = random.randint(SPIN_MIN, SPIN_MAX)
+    update_diamonds(user_id, won)
+    set_last_spin(user_id, now)
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        f"🎡 گردونه چرخید!\n"
+        f"💎 تبریک، {won} الماس بردی!\n"
+        f"💰 موجودی جدید: {get_balance(user_id)} 💎\n\n"
+        f"⏱ نوبت بعدی: {SPIN_COOLDOWN_HOURS} ساعت دیگه"
+    )
+
+
+# ================== وام الماس ==================
+@bot.callback_query_handler(func=lambda call: call.data == "loanmenu")
+def loan_menu(call):
+    user_id = call.from_user.id
+    if not get_user(user_id):
+        bot.answer_callback_query(call.id, "اول /start بزن.", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id)
+    current = get_loan_balance(user_id)
+    remaining = LOAN_MAX - current
+
+    if remaining <= 0:
+        bot.send_message(
+            call.message.chat.id,
+            f"💰 وام الماس\n\n"
+            f"💳 وام فعلی شما: {current} 💎 (از سقف {LOAN_MAX})\n"
+            f"⛔ به سقف مجاز رسیدی.\n"
+            f"با بردن شرط یا کازینو، ۱۰٪ اضافه از هر برد کسر و بدهیت کم میشه؛ بعدش دوباره می‌تونی وام بگیری."
+        )
+        return
+
+    msg = bot.send_message(
+        call.message.chat.id,
+        f"💰 وام الماس\n\n"
+        f"💳 وام فعلی شما: {current} 💎 (از سقف {LOAN_MAX})\n"
+        f"✅ می‌تونی تا {remaining} 💎 دیگه وام بگیری.\n\n"
+        f"⚠️ نکته: تا وقتی وامت صفر نشه، از هر برد شرط یا کازینو ۱۰٪ اضافه "
+        f"(در کنار ۱۰٪ مالیات همیشگی) بابت بازپرداخت وام کسر میشه.\n\n"
+        f"مبلغی که می‌خوای وام بگیری رو به عدد بفرست:"
+    )
+    bot.register_next_step_handler(msg, loan_amount_step, user_id, remaining)
+
+
+def loan_amount_step(message, expected_user_id, remaining):
+    if message.from_user.id != expected_user_id:
+        return
+
+    if not message.text or not message.text.strip().isdigit():
+        msg = bot.reply_to(message, "لطفاً فقط عدد بفرست. مثال: 100000")
+        bot.register_next_step_handler(msg, loan_amount_step, expected_user_id, remaining)
+        return
+
+    amount = int(message.text.strip())
+    if amount <= 0:
+        msg = bot.reply_to(message, "مبلغ باید بزرگتر از صفر باشه. دوباره بفرست:")
+        bot.register_next_step_handler(msg, loan_amount_step, expected_user_id, remaining)
+        return
+    if amount > remaining:
+        msg = bot.reply_to(message, f"حداکثر می‌تونی {remaining} 💎 وام بگیری. یه عدد کمتر یا مساوی بفرست:")
+        bot.register_next_step_handler(msg, loan_amount_step, expected_user_id, remaining)
+        return
+
+    update_diamonds(expected_user_id, amount)
+    change_loan_balance(expected_user_id, amount)
+    bot.reply_to(
+        message,
+        f"✅ {amount} 💎 وام گرفتی و به موجودیت اضافه شد.\n"
+        f"💳 مجموع وام فعلی: {get_loan_balance(expected_user_id)} 💎\n"
+        f"💰 موجودی جدید: {get_balance(expected_user_id)} 💎"
+    )
+
+
 @bot.callback_query_handler(func=lambda call: call.data == "showhelp")
 def handle_show_help(call):
     bot.answer_callback_query(call.id)
@@ -304,7 +470,14 @@ def handle_show_help(call):
         "👤 حساب کاربری کامل + دکمه انتقال:\n"
         "بزن /account\n\n"
         "👥 لینک رفرال برای دعوت دوستات:\n"
-        "بزن /start و روی «زیرمجموعه‌گیری» بزن\n\n"
+        f"بزن /start و روی «زیرمجموعه‌گیری» بزن (پاداش هر زیرمجموعه: {REFERRAL_BONUS} 💎)\n\n"
+        "💰 وام الماس:\n"
+        f"از /start روی «وام الماس» بزن، تا سقف {LOAN_MAX} 💎 می‌تونی قرض بگیری.\n"
+        "تا وقتی وامت صفر نشه، از هر برد شرط یا کازینو ۱۰٪ اضافه (در کنار ۱۰٪ مالیات همیشگی) بابت بازپرداخت کسر میشه.\n\n"
+        "🎡 گردونه الماس:\n"
+        f"از /start روی «گردونه الماس» بزن و بین {SPIN_MIN} تا {SPIN_MAX} 💎 شانسی ببر (هر {SPIN_COOLDOWN_HOURS} ساعت یه‌بار).\n\n"
+        "🤖 بازی با ربات تو کازینو:\n"
+        "بعد از انتخاب مبلغ، به‌جای «پیوستن»، «بازی با ربات» رو بزن؛ خودت ایموجی رو بنداز، ربات هم می‌ندازه و نتیجه اعلام میشه.\n\n"
         "🏆 رتبه‌بندی برترین‌ها:\n"
         "بزن /rank یا بنویس رنک"
     )
@@ -535,27 +708,35 @@ def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
 
     winner_is_creator = random.random() < 0.5
     pool = 2 * amount
-    tax = int(pool * TAX_RATE)
-    payout = pool - tax
 
     if winner_is_creator:
-        update_diamonds(creator_id, payout)
         winner_name, winner_id = creator_name, creator_id
         loser_name, loser_id = opponent_name, opponent_id
     else:
-        if not is_bot:
-            update_diamonds(opponent_id, payout)
         winner_name, winner_id = opponent_name, opponent_id
         loser_name, loser_id = creator_name, creator_id
 
-    if get_user(TAX_RECEIVER_ID):
-        update_diamonds(TAX_RECEIVER_ID, tax)
+    # اگه برنده رباته (یعنی opponent_id=None و is_bot=True و اون برنده شده) پولی رد و بدل نمیشه
+    real_winner_id = None if (winner_id is None) else winner_id
+    if is_bot and not winner_is_creator:
+        real_winner_id = None  # ربات برنده شده، چیزی به کسی داده نمیشه
+
+    if real_winner_id is not None:
+        payout, tax, loan_repay = calculate_payout(real_winner_id, pool)
+        update_diamonds(real_winner_id, payout)
+        if get_user(TAX_RECEIVER_ID):
+            update_diamonds(TAX_RECEIVER_ID, tax)
+    else:
+        payout = 0
+        tax = int(pool * TAX_RATE)
+        loan_repay = 0
 
     set_bet_status(bet_id, "finished")
 
     winner_id_str = str(winner_id) if winner_id is not None else "—"
     loser_id_str = str(loser_id) if loser_id is not None else "—"
 
+    extra_line = f"💳 کسر بابت وام (۱۰٪): {loan_repay}\n" if loan_repay > 0 else ""
     text = (
         f"🎲 شرط تموم شد!\n"
         f"💎 مبلغ: {amount}\n"
@@ -564,7 +745,8 @@ def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
         f"😢 بازنده: {loser_name} (آیدی: {loser_id_str})\n\n"
         f"💰 مبلغ برد: {pool}\n"
         f"🏛 مالیات ({int(TAX_RATE*100)}٪): {tax}\n"
-        f"✅ مبلغ نهایی برنده: {payout}"
+        f"{extra_line}"
+        f"✅ مبلغ نهایی برنده: {payout if real_winner_id is not None else '—'}"
     )
     bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=None)
 
@@ -744,11 +926,12 @@ def casino_bet_select(call):
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"))
+    markup.add(types.InlineKeyboardButton("🤖 بازی با ربات", callback_data="cbotplay"))
     text = (
         f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]}\n"
         f"💎 مبلغ شرط: {amount}\n\n"
         f"👤 بازیکن اول: {get_display_name(user)}\n"
-        f"⏳ منتظر بازیکن دوم... (فرصت: {JOIN_TIMEOUT_SECONDS} ثانیه)"
+        f"⏳ منتظر بازیکن دوم یا شروع بازی با ربات... (فرصت پیوستن: {JOIN_TIMEOUT_SECONDS} ثانیه)"
     )
     bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
     msg_id = call.message.message_id
@@ -762,6 +945,7 @@ def casino_bet_select(call):
             "player2": None,
             "score1": None,
             "score2": None,
+            "vs_bot": False,
         }
 
     threading.Timer(JOIN_TIMEOUT_SECONDS, check_casino_timeout, args=[msg_id]).start()
@@ -803,11 +987,12 @@ def casino_custom_amount_step(message, game_key, expected_user_id):
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ پیوستن به بازی", callback_data="cjoin"))
+    markup.add(types.InlineKeyboardButton("🤖 بازی با ربات", callback_data="cbotplay"))
     text = (
         f"{CASINO_GAMES[game_key]} بازی {CASINO_GAME_NAMES[game_key]}\n"
         f"💎 مبلغ شرط: {amount}\n\n"
         f"👤 بازیکن اول: {get_display_name(user)}\n"
-        f"⏳ منتظر بازیکن دوم... (فرصت: {JOIN_TIMEOUT_SECONDS} ثانیه)"
+        f"⏳ منتظر بازیکن دوم یا شروع بازی با ربات... (فرصت پیوستن: {JOIN_TIMEOUT_SECONDS} ثانیه)"
     )
     sent = bot.send_message(message.chat.id, text, reply_markup=markup)
     msg_id = sent.message_id
@@ -821,6 +1006,7 @@ def casino_custom_amount_step(message, game_key, expected_user_id):
             "player2": None,
             "score1": None,
             "score2": None,
+            "vs_bot": False,
         }
 
     threading.Timer(JOIN_TIMEOUT_SECONDS, check_casino_timeout, args=[msg_id]).start()
@@ -863,10 +1049,41 @@ def casino_join(call):
     )
 
 
+@bot.callback_query_handler(func=lambda call: call.data == "cbotplay")
+def casino_play_vs_bot(call):
+    msg_id = call.message.message_id
+    with _casino_lock:
+        game = active_casino_games.get(msg_id)
+        if not game:
+            bot.answer_callback_query(call.id, "این بازی دیگه معتبر نیست.", show_alert=True)
+            return
+        if game["player2"] is not None:
+            bot.answer_callback_query(call.id, "این بازی قبلاً شروع شده.", show_alert=True)
+            return
+        if call.from_user.id != game["player1"]["id"]:
+            bot.answer_callback_query(call.id, "فقط سازنده می‌تونه با ربات بازی کنه.", show_alert=True)
+            return
+
+        game["player2"] = {"id": None, "name": "🤖 ربات"}
+        game["vs_bot"] = True
+
+    bot.answer_callback_query(call.id)
+    emoji = CASINO_GAMES[game["game"]]
+    bot.edit_message_text(
+        f"{emoji} بازی با ربات شروع شد!\n"
+        f"⚔️ {game['player1']['name']} در برابر 🤖 ربات\n"
+        f"💎 مبلغ: {game['bet']}\n\n"
+        f"🎲 حالا خودت {emoji} رو همینجا تو چت بفرست، بعدش ربات هم می‌ندازه!",
+        chat_id=game["chat_id"], message_id=msg_id, reply_markup=None
+    )
+
+
 # ================== دریافت ایموجی‌هایی که خود بازیکن‌ها می‌فرستن ==================
 @bot.message_handler(content_types=["dice"])
 def handle_dice_throw(message):
     to_finalize = None
+    bot_throw_needed = None  # (msg_id, chat_id, emoji)
+
     with _casino_lock:
         for msg_id, game in active_casino_games.items():
             if game["chat_id"] != message.chat.id or game["player2"] is None:
@@ -876,16 +1093,30 @@ def handle_dice_throw(message):
                 continue
 
             user_id = message.from_user.id
+            vs_bot = game.get("vs_bot", False)
+
             if user_id == game["player1"]["id"] and game["score1"] is None:
                 game["score1"] = message.dice.value
-            elif user_id == game["player2"]["id"] and game["score2"] is None:
+            elif (not vs_bot) and user_id == game["player2"]["id"] and game["score2"] is None:
                 game["score2"] = message.dice.value
             else:
                 continue
 
-            if game["score1"] is not None and game["score2"] is not None:
+            if vs_bot and game["score1"] is not None and game["score2"] is None:
+                bot_throw_needed = (msg_id, game["chat_id"], emoji)
+            elif game["score1"] is not None and game["score2"] is not None:
                 to_finalize = msg_id
             break
+
+    if bot_throw_needed:
+        b_msg_id, b_chat_id, b_emoji = bot_throw_needed
+        bot_dice = bot.send_dice(b_chat_id, emoji=b_emoji)
+        time.sleep(3)
+        with _casino_lock:
+            game = active_casino_games.get(b_msg_id)
+            if game and game["score2"] is None:
+                game["score2"] = bot_dice.dice.value
+                to_finalize = b_msg_id
 
     if to_finalize:
         finalize_casino_game(to_finalize)
@@ -902,18 +1133,20 @@ def finalize_casino_game(msg_id):
     player1, player2 = game["player1"], game["player2"]
     score1, score2 = game["score1"], game["score2"]
     bet = game["bet"]
+    vs_bot = game.get("vs_bot", False)
 
     time.sleep(2)  # کمی صبر برای تموم شدن انیمیشن آخرین تاس
 
     if score1 == score2:
         update_diamonds(player1["id"], bet)
-        update_diamonds(player2["id"], bet)
+        if not vs_bot:
+            update_diamonds(player2["id"], bet)
         result_text = (
             f"{emoji} شرط تموم شد!\n"
             f"💎 مبلغ: {bet}\n"
             f"⚔️ {player1['name']} در برابر {player2['name']}\n\n"
             f"🤝 مساوی شد! (امتیاز: {score1} - {score2})\n"
-            f"💰 مبلغ به هر دو نفر برگشت داده شد."
+            f"💰 مبلغ به {'سازنده' if vs_bot else 'هر دو نفر'} برگشت داده شد."
         )
     else:
         if score1 > score2:
@@ -922,13 +1155,18 @@ def finalize_casino_game(msg_id):
             winner, loser, w_score, l_score = player2, player1, score2, score1
 
         total_pot = bet * 2
-        tax = int(total_pot * TAX_RATE)
-        final_amount = total_pot - tax
+        winner_id = winner["id"]  # اگه ربات برده باشه، اینجا None میشه
 
-        update_diamonds(winner["id"], final_amount)
-        if get_user(TAX_RECEIVER_ID):
-            update_diamonds(TAX_RECEIVER_ID, tax)
+        if winner_id is not None:
+            final_amount, tax, loan_repay = calculate_payout(winner_id, total_pot)
+            update_diamonds(winner_id, final_amount)
+            if get_user(TAX_RECEIVER_ID):
+                update_diamonds(TAX_RECEIVER_ID, tax)
+        else:
+            final_amount, loan_repay = None, 0
+            tax = int(total_pot * TAX_RATE)
 
+        extra_line = f"💳 کسر بابت وام (۱۰٪): {loan_repay}\n" if loan_repay > 0 else ""
         result_text = (
             f"{emoji} شرط تموم شد!\n"
             f"💎 مبلغ: {bet}\n"
@@ -937,7 +1175,8 @@ def finalize_casino_game(msg_id):
             f"😢 بازنده: {loser['name']} (امتیاز: {l_score})\n\n"
             f"💰 مبلغ برد: {total_pot}\n"
             f"🏛 مالیات ({int(TAX_RATE*100)}٪): {tax}\n"
-            f"✅ مبلغ نهایی برنده: {final_amount}"
+            f"{extra_line}"
+            f"✅ مبلغ نهایی برنده: {final_amount if final_amount is not None else '—'}"
         )
 
     try:
