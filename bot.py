@@ -554,7 +554,7 @@ def ask_transfer_target(message, owner_id):
             pass
 
 # ================== دستورات ادمین ==================
-@bot.message_handler(func=lambda m: m.text and re.search(r"افزودن\s+الماس\s+(\d+)", m.text))
+@bot.message_handler(func=lambda m: m.text and re.search(r"افزودن\s*الماس\s*(\d+)", m.text))
 def text_add_diamonds(message):
     if message.from_user.id not in ADMIN_IDS:
         bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس اضافه کنه.")
@@ -563,7 +563,7 @@ def text_add_diamonds(message):
         bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nافزودن الماس <مقدار>\nمثال: افزودن الماس 50")
         return
 
-    match = re.search(r"افزودن\s+الماس\s+(\d+)", message.text)
+    match = re.search(r"افزودن\s*الماس\s*(\d+)", message.text)
     if not match:
         bot.reply_to(message, "فرمت اشتباه است.")
         return
@@ -581,7 +581,7 @@ def text_add_diamonds(message):
     markup = back_to_main_menu_markup()
     bot.reply_to(message, f"✅ {amount} 💎 به کاربر {target_id} اضافه شد.\nموجودی فعلی: {get_balance(target_id)} 💎", reply_markup=markup)
 
-@bot.message_handler(func=lambda m: m.text and re.search(r"کم\s*کردن\s+الماس\s+(\d+)", m.text))
+@bot.message_handler(func=lambda m: m.text and re.search(r"کم\s*کردن\s*الماس\s*(\d+)", m.text))
 def text_remove_diamonds(message):
     if message.from_user.id not in ADMIN_IDS:
         bot.reply_to(message, "⛔ فقط ادمین می‌تونه الماس کم کنه.")
@@ -590,7 +590,7 @@ def text_remove_diamonds(message):
         bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nکم کردن الماس <مقدار>\nمثال: کم کردن الماس 50")
         return
 
-    match = re.search(r"کم\s*کردن\s+الماس\s+(\d+)", message.text)
+    match = re.search(r"کم\s*کردن\s*الماس\s*(\d+)", message.text)
     if not match:
         bot.reply_to(message, "فرمت اشتباه است.")
         return
@@ -608,58 +608,6 @@ def text_remove_diamonds(message):
     update_diamonds(target_id, -deduct)
     markup = back_to_main_menu_markup()
     bot.reply_to(message, f"✅ {deduct} 💎 از کاربر {target_id} کم شد.\nموجودی فعلی: {get_balance(target_id)} 💎", reply_markup=markup)
-
-def perform_transfer(sender_id, target_id, amount):
-    if amount <= 0:
-        return False, "مقدار باید بزرگتر از صفر باشه."
-    if target_id == sender_id:
-        return False, "نمیشه به خودت انتقال بدی."
-    if not get_user(target_id):
-        return False, "کاربر مقصد هنوز /start نزده."
-    if get_balance(sender_id) < amount:
-        return False, "موجودی کافی نداری."
-    update_diamonds(sender_id, -amount)
-    update_diamonds(target_id, amount)
-    return True, f"✅ {amount} 💎 به کاربر {target_id} منتقل شد.\nموجودی جدید تو: {get_balance(sender_id)} 💎"
-
-@bot.message_handler(commands=["transfer"])
-def cmd_transfer(message):
-    sender_id = message.from_user.id
-    if not get_user(sender_id):
-        bot.reply_to(message, "اول /start بزن.")
-        return
-    if not message.reply_to_message:
-        bot.reply_to(message, "روی پیام مقصد ریپلای کن: /transfer <مقدار>")
-        return
-    parts = message.text.split()
-    if len(parts) < 2 or not parts[1].isdigit():
-        bot.reply_to(message, "مثال: /transfer 20")
-        return
-    amount = int(parts[1])
-    target_id = message.reply_to_message.from_user.id
-    ok, msg = perform_transfer(sender_id, target_id, amount)
-    markup = back_to_main_menu_markup()
-    bot.reply_to(message, msg, reply_markup=markup)
-
-@bot.message_handler(func=lambda m: m.text and re.search(r"انتقال\s+الماس\s+(\d+)", m.text))
-def text_transfer(message):
-    sender_id = message.from_user.id
-    if not get_user(sender_id):
-        bot.reply_to(message, "اول باید یه‌بار /start بزنی (توی پیوی بات).")
-        return
-    if not message.reply_to_message:
-        bot.reply_to(message, "روی پیام کاربر مقصد ریپلای کن و بنویس:\nانتقال الماس <مقدار>\nمثال: انتقال الماس 200")
-        return
-
-    match = re.search(r"انتقال\s+الماس\s+(\d+)", message.text)
-    if not match:
-        bot.reply_to(message, "فرمت اشتباه است.")
-        return
-    amount = int(match.group(1))
-    target_id = message.reply_to_message.from_user.id
-    ok, msg = perform_transfer(sender_id, target_id, amount)
-    markup = back_to_main_menu_markup()
-    bot.reply_to(message, msg, reply_markup=markup)
 
 # ================== شرط متنی ==================
 def check_bet_timeout(bet_id):
