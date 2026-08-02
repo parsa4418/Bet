@@ -217,7 +217,7 @@ def main_menu_markup():
     markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data="showaccount"))
     markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data="showreferral"))
     markup.add(types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu"))
-    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس💎", callback_data="spinwheel"))
+    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس", callback_data="spinwheel"))
     markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
     markup.add(types.InlineKeyboardButton("🎰 کازینو", callback_data="casinomenu"))
     return markup
@@ -864,10 +864,12 @@ CASINO_GAME_NAMES = {
 CASINO_BET_PRESETS = [10, 50, 100, 500, 1000]
 
 def casino_games_keyboard():
-    """صفحه اول کازینو - فقط لیست بازی‌ها (بدون دکمه خانه)"""
+    """صفحه اول کازینو - لیست بازی‌ها + دکمه بازگشت به خانه"""
     markup = types.InlineKeyboardMarkup()
     for key, emoji in CASINO_GAMES.items():
         markup.add(types.InlineKeyboardButton(f"{emoji} {CASINO_GAME_NAMES[key]}", callback_data=f"cgame|{key}"))
+    # اضافه کردن دکمه بازگشت به منوی اصلی
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     return markup
 
 @bot.callback_query_handler(func=lambda call: call.data == "casinomenu")
