@@ -212,14 +212,14 @@ def calculate_payout(winner_id, pool):
 
 # ================== توابع دکمه‌ها ==================
 def main_menu_markup():
-    """دکمه‌های منوی اصلی (بدون دکمه برگشت به خانه)"""
+    """دکمه‌های منوی اصلی"""
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data="showaccount"))
     markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data="showreferral"))
     markup.add(types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu"))
-    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس", callback_data="spinwheel"))
+    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس💎", callback_data="spinwheel"))
+    markup.add(types.InlineKeyboardButton("🎰 کازینو", callback_data="casinomenu"))  # کازینو قبل از راهنما
     markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
-    markup.add(types.InlineKeyboardButton("🎰 کازینو", callback_data="casinomenu"))
     return markup
 
 def back_to_main_menu_markup():
