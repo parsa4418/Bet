@@ -173,7 +173,7 @@ def main_menu_markup():
     markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data="showaccount"))
     markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data="showreferral"))
     markup.add(types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu"))
-    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس💎", callback_data="spinwheel"))
+    markup.add(types.InlineKeyboardButton("🎡 گردونه الماس", callback_data="spinwheel"))
     markup.add(types.InlineKeyboardButton("🎰 کازینو", callback_data="casinomenu"))
     markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
     return markup
