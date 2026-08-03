@@ -657,15 +657,18 @@ def start_bet_flow(message, amount):
 
     bet_id = create_bet(user_id, creator_name, amount, message.chat.id, sent.message_id)
 
+    def start_bet_flow(message, amount):
+    # ... (قسمت‌های بالا)
     markup = types.InlineKeyboardMarkup()
     markup.row(
         types.InlineKeyboardButton("❌ لغو شرط", callback_data=f"cancel|{bet_id}"),
         types.InlineKeyboardButton("✅ پیوستن به شرط", callback_data=f"join|{bet_id}"),
     )
     markup.row(types.InlineKeyboardButton("🤖 شرط با ربات", callback_data=f"bot|{bet_id}"))
-    markup.row(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+    # این خط را حذف کنید:
+    # markup.row(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     safe_edit_message(sent.text, chat_id=message.chat.id, message_id=sent.message_id, reply_markup=markup)
-
+    # ...
     threading.Timer(JOIN_TIMEOUT_SECONDS, check_bet_timeout, args=[bet_id]).start()
 
 @bot.message_handler(commands=["bet", "شرط"])
