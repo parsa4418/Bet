@@ -1,3 +1,5 @@
 flask
 pyTelegramBotAPI
+supabase
+python-dotenv
 gunicorn
