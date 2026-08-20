@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 بات شرط‌بندی الماس با Webhook - نسخه Supabase (کامل)
+اضافه شده: پنل مدیریت، سیستم تورنومنت، رفع باگ شرط
 """
 
 import os
@@ -9,6 +10,7 @@ import re
 import time
 import threading
 import logging
+import json
 from flask import Flask, request
 import telebot
 from telebot import types
@@ -167,8 +169,112 @@ def calculate_payout(winner_id, pool):
         final_payout = 0
     return final_payout, admin_tax, loan_repay
 
+# ================== توابع تورنومنت ==================
+def get_active_tournament():
+    """بازگرداندن تورنومنت فعال (status='active') یا None"""
+    try:
+        response = supabase.table("tournaments").select("*").eq("status", "active").execute()
+        return response.data[0] if response.data else None
+    except Exception as e:
+        logging.error(f"خطا در get_active_tournament: {e}")
+        return None
+
+def get_user_code(tournament_id, user_id):
+    """دریافت کد کاربر برای تورنومنت مشخص، در صورت نبود، تولید و ذخیره می‌کند"""
+    try:
+        # اول جستجو
+        resp = supabase.table("tournament_codes").select("*").eq("tournament_id", tournament_id).eq("user_id", user_id).execute()
+        if resp.data:
+            return resp.data[0]['code']
+        # تولید کد یکتا
+        import string
+        import random
+        while True:
+            code = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+            # بررسی یکتایی
+            check = supabase.table("tournament_codes").select("*").eq("code", code).execute()
+            if not check.data:
+                break
+        # ذخیره
+        supabase.table("tournament_codes").insert({
+            "tournament_id": tournament_id,
+            "user_id": user_id,
+            "code": code
+        }).execute()
+        return code
+    except Exception as e:
+        logging.error(f"خطا در get_user_code: {e}")
+        return None
+
+def get_votes_for_tournament(tournament_id):
+    """دریافت تعداد آراء برای هر کاربر در تورنومنت"""
+    try:
+        response = supabase.table("tournament_votes").select("target_user_id").eq("tournament_id", tournament_id).execute()
+        votes = {}
+        for row in response.data:
+            target = row['target_user_id']
+            votes[target] = votes.get(target, 0) + 1
+        return votes
+    except Exception as e:
+        logging.error(f"خطا در get_votes_for_tournament: {e}")
+        return {}
+
+def get_tournament_ranking(tournament_id, limit=10):
+    """بازگرداندن لیست (user_id, vote_count) مرتب نزولی"""
+    votes = get_votes_for_tournament(tournament_id)
+    sorted_users = sorted(votes.items(), key=lambda x: x[1], reverse=True)
+    return sorted_users[:limit]
+
+def add_vote(tournament_id, voter_id, code):
+    """ثبت رأی: اگر کد معتبر باشد و رأی‌دهنده قبلاً رأی نداده باشد"""
+    try:
+        # بررسی کد
+        code_resp = supabase.table("tournament_codes").select("user_id").eq("tournament_id", tournament_id).eq("code", code).execute()
+        if not code_resp.data:
+            return False, "کد نامعتبر است ❌"
+        target_user_id = code_resp.data[0]['user_id']
+        if target_user_id == voter_id:
+            return False, "نمی‌توانید به خودتان رأی دهید ❌"
+        # بررسی تکراری نبودن رأی
+        vote_check = supabase.table("tournament_votes").select("*").eq("tournament_id", tournament_id).eq("voter_id", voter_id).execute()
+        if vote_check.data:
+            return False, "شما قبلاً رأی خود را ثبت کرده‌اید ❌"
+        # ثبت رأی
+        supabase.table("tournament_votes").insert({
+            "tournament_id": tournament_id,
+            "voter_id": voter_id,
+            "target_user_id": target_user_id
+        }).execute()
+        return True, "✅ رأی شما با موفقیت ثبت شد."
+    except Exception as e:
+        logging.error(f"خطا در add_vote: {e}")
+        return False, "خطای داخلی رخ داد."
+
+def end_tournament(tournament_id):
+    """پایان تورنومنت: محاسبه برندگان و توزیع جوایز"""
+    try:
+        tourn = supabase.table("tournaments").select("*").eq("tournament_id", tournament_id).execute()
+        if not tourn.data:
+            return False, "تورنومنت یافت نشد"
+        prizes = tourn.data[0]['prizes']  # JSON مانند {"1": 1000, "2": 500, ...}
+        if not prizes:
+            return False, "جایزه‌ای تعریف نشده است"
+        # دریافت رتبه‌بندی
+        ranking = get_tournament_ranking(tournament_id, limit=10)
+        # توزیع جوایز
+        for idx, (user_id, votes) in enumerate(ranking, start=1):
+            prize = prizes.get(str(idx), 0)
+            if prize > 0:
+                update_diamonds(user_id, prize)
+        # تغییر وضعیت تورنومنت
+        supabase.table("tournaments").update({"status": "ended", "end_time": "now()"}).eq("tournament_id", tournament_id).execute()
+        return True, "تورنومنت پایان یافت و جوایز توزیع شد."
+    except Exception as e:
+        logging.error(f"خطا در end_tournament: {e}")
+        return False, f"خطا: {e}"
+
 # ================== دکمه‌ها و توابع کمکی ==================
-def main_menu_markup():
+def main_menu_markup(user_id=None):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("👤 حساب کاربری", callback_data="showaccount"))
     markup.add(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data="showreferral"))
@@ -176,9 +282,13 @@ def main_menu_markup():
     markup.add(types.InlineKeyboardButton("🎡 گردونه الماس", callback_data="spinwheel"))
     markup.add(types.InlineKeyboardButton("🎰 کازینو", callback_data="casinomenu"))
     markup.add(types.InlineKeyboardButton("📖 راهنما", callback_data="showhelp"))
+    markup.add(types.InlineKeyboardButton("🏆 تورنومنت", callback_data="tournament_menu"))
+    # دکمه پنل مدیریت فقط برای ادمین‌ها
+    if user_id and user_id in ADMIN_IDS:
+        markup.add(types.InlineKeyboardButton("⚙️ پنل مدیریت", callback_data="admin_panel"))
     return markup
 
-def back_to_main_menu_markup():
+def back_to_main_menu_markup(user_id=None):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
     return markup
@@ -230,10 +340,10 @@ def cmd_start(message):
             message.chat.id,
             photo=photo_url,
             caption=caption,
-            reply_markup=main_menu_markup()
+            reply_markup=main_menu_markup(user_id)
         )
     except Exception:
-        safe_send_message(message.chat.id, caption, reply_markup=main_menu_markup())
+        safe_send_message(message.chat.id, caption, reply_markup=main_menu_markup(user_id))
 
 # ================== کالبک منوی اصلی ==================
 @bot.callback_query_handler(func=lambda call: call.data == "mainmenu")
@@ -247,7 +357,7 @@ def main_menu(call):
             call.message.chat.id,
             photo=photo_url,
             caption=caption,
-            reply_markup=main_menu_markup()
+            reply_markup=main_menu_markup(call.from_user.id)
         )
         bot.delete_message(call.message.chat.id, call.message.message_id)
     except Exception:
@@ -255,7 +365,7 @@ def main_menu(call):
             caption,
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            reply_markup=main_menu_markup()
+            reply_markup=main_menu_markup(call.from_user.id)
         )
 
 # ================== بخش حساب کاربری ==================
@@ -445,7 +555,11 @@ def handle_show_help(call):
         "🤖 بازی با ربات تو کازینو:\n"
         "بعد از انتخاب مبلغ، به‌جای «پیوستن»، «بازی با ربات» رو بزن؛ خودت ایموجی رو بنداز، ربات هم می‌ندازه و نتیجه اعلام میشه.\n\n"
         "🏆 رتبه‌بندی برترین‌ها:\n"
-        "بزن /rank یا بنویس رنک"
+        "بزن /rank یا بنویس رنک\n\n"
+        "🏆 تورنومنت:\n"
+        "با دکمه «تورنومنت» در منوی اصلی وارد شوید.\n"
+        "هر کاربر یک کد ۶ رقمی دریافت می‌کند. دوستان خود را به بات دعوت کنید تا با وارد کردن کد شما، به شما رأی دهند.\n"
+        "هر کاربر فقط یک بار می‌تواند رأی دهد. پس از پایان تورنومنت، به ۱۰ نفر برتر جوایز تعیین‌شده توسط ادمین تعلق می‌گیرد."
     )
     markup = back_to_main_menu_markup()
     safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -508,7 +622,7 @@ def ask_transfer_target(message, owner_id):
         except Exception:
             pass
 
-# ================== دستورات ادمین ==================
+# ================== دستورات ادمین (قدیمی) ==================
 @bot.message_handler(func=lambda m: m.text and re.search(r"افزودن\s*الماس\s*(\d+)", m.text))
 def text_add_diamonds(message):
     if message.from_user.id not in ADMIN_IDS:
@@ -669,7 +783,6 @@ def start_bet_flow(message, amount):
         types.InlineKeyboardButton("✅ پیوستن به شرط", callback_data=f"join|{bet_id}"),
     )
     markup.row(types.InlineKeyboardButton("🤖 شرط با ربات", callback_data=f"bot|{bet_id}"))
-    # دکمه منوی اصلی در شرط متنی نمایش داده نمی‌شود
     safe_edit_message(sent.text, chat_id=message.chat.id, message_id=sent.message_id, reply_markup=markup)
 
     threading.Timer(JOIN_TIMEOUT_SECONDS, check_bet_timeout, args=[bet_id]).start()
@@ -754,8 +867,17 @@ def handle_callback(call):
 
     _, creator_id, creator_name, amount, chat_id, message_id, status = bet
 
+    # ========== بهبود پیام‌های خطا برای وضعیت‌های مختلف ==========
     if status != "pending":
-        bot.answer_callback_query(call.id, "این شرط قبلاً تموم شده.", show_alert=True)
+        if status == "timeout":
+            msg = "⏱ زمان انتظار به پایان رسید و شرط لغو شد."
+        elif status == "cancelled":
+            msg = "❌ این شرط توسط سازنده لغو شده است."
+        elif status == "finished":
+            msg = "🏁 این شرط قبلاً به پایان رسیده است."
+        else:
+            msg = "این شرط دیگر فعال نیست."
+        bot.answer_callback_query(call.id, msg, show_alert=True)
         return
 
     clicker_id = call.from_user.id
@@ -1237,7 +1359,6 @@ def finalize_casino_game(msg_id):
             f"✅ مبلغ نهایی برنده: {final_amount if final_amount is not None else '—'}"
         )
 
-    # نتیجه بدون دکمه
     safe_edit_message(result_text, chat_id=chat_id, message_id=msg_id, reply_markup=None)
 
 # ================== رتبه‌بندی ==================
@@ -1294,6 +1415,272 @@ def show_balance(message):
         markup.add(types.InlineKeyboardButton(f"💎 {balance}", callback_data="pending"))
         markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
         bot.reply_to(message, text, reply_markup=markup)
+
+# ================== بخش تورنومنت ==================
+@bot.callback_query_handler(func=lambda call: call.data == "tournament_menu")
+def tournament_menu(call):
+    bot.answer_callback_query(call.id)
+    user_id = call.from_user.id
+    if not get_user(user_id):
+        bot.send_message(call.message.chat.id, "اول /start بزن.")
+        return
+
+    tournament = get_active_tournament()
+    if not tournament:
+        text = "🏆 هیچ تورنومنتی فعال نیست.\nلطفاً بعداً مراجعه کنید."
+        markup = back_to_main_menu_markup()
+        safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+        return
+
+    tournament_id = tournament['tournament_id']
+    prizes = tournament['prizes']  # json
+
+    # دریافت رتبه‌بندی
+    ranking = get_tournament_ranking(tournament_id, limit=10)
+    text = "🏆 تورنومنت ربات شرطبندی\n\n"
+    if ranking:
+        text += "🔹 رتبه‌بندی فعلی:\n"
+        for idx, (uid, votes) in enumerate(ranking, 1):
+            user_info = get_user(uid)
+            name = user_info['username'] if user_info and user_info['username'] else f"کاربر {uid}"
+            text += f"{idx}. {name} — {votes} رأی\n"
+    else:
+        text += "هنوز رأی‌ای ثبت نشده است.\n"
+
+    # نمایش جوایز
+    if prizes:
+        text += "\n🎁 جوایز:\n"
+        for rank in range(1, 11):
+            prize = prizes.get(str(rank), 0)
+            if prize > 0:
+                text += f"نفر {rank}: {prize} 💎\n"
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📋 دریافت کد رأی", callback_data=f"getvote|{tournament_id}"))
+    markup.add(types.InlineKeyboardButton("✍️ ثبت رأی", callback_data=f"submitvote|{tournament_id}"))
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("getvote|"))
+def get_vote_code(call):
+    bot.answer_callback_query(call.id)
+    tournament_id = int(call.data.split("|")[1])
+    user_id = call.from_user.id
+    code = get_user_code(tournament_id, user_id)
+    if code:
+        text = f"🔑 کد رأی شما برای این تورنومنت:\n`{code}`\n\nاین کد را با دوستان خود به اشتراک بگذارید تا به شما رأی دهند."
+    else:
+        text = "خطا در دریافت کد. لطفاً دوباره تلاش کنید."
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="tournament_menu"))
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("submitvote|"))
+def submit_vote_prompt(call):
+    bot.answer_callback_query(call.id)
+    tournament_id = int(call.data.split("|")[1])
+    text = "✍️ لطفاً کد رأی شخص مورد نظر را وارد کنید (۶ کاراکتر):"
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 بازگشت", callback_data="tournament_menu"))
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+    bot.register_next_step_handler(call.message, process_vote_code, tournament_id, call.from_user.id, call.message.message_id)
+
+def process_vote_code(message, tournament_id, voter_id, original_msg_id):
+    if message.from_user.id != voter_id:
+        return
+    code = message.text.strip().lower()
+    if len(code) != 6:
+        bot.reply_to(message, "❌ کد باید دقیقاً ۶ کاراکتر باشد. دوباره تلاش کنید.")
+        bot.register_next_step_handler(message, process_vote_code, tournament_id, voter_id, original_msg_id)
+        return
+    # ثبت رأی
+    success, msg = add_vote(tournament_id, voter_id, code)
+    if success:
+        # حذف پیام ورودی و نمایش نتیجه در پیام اصلی
+        try:
+            bot.delete_message(message.chat.id, message.message_id)
+        except:
+            pass
+        # ویرایش پیام اصلی
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 بازگشت به تورنومنت", callback_data="tournament_menu"))
+        safe_edit_message(f"✅ رأی شما با موفقیت ثبت شد.\n{msg}", chat_id=message.chat.id, message_id=original_msg_id, reply_markup=markup)
+    else:
+        bot.reply_to(message, f"❌ {msg}\nلطفاً کد را دوباره وارد کنید:")
+        bot.register_next_step_handler(message, process_vote_code, tournament_id, voter_id, original_msg_id)
+
+# ================== بخش پنل مدیریت ==================
+@bot.callback_query_handler(func=lambda call: call.data == "admin_panel")
+def admin_panel(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "⛔ دسترسی غیرمجاز", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    text = "⚙️ پنل مدیریت\nلطفاً یکی از گزینه‌ها را انتخاب کنید:"
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🏆 شروع تورنومنت", callback_data="admin_start_tournament"))
+    markup.add(types.InlineKeyboardButton("🏁 پایان تورنومنت", callback_data="admin_end_tournament"))
+    markup.add(types.InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"))
+    markup.add(types.InlineKeyboardButton("➕ افزودن الماس", callback_data="admin_add_diamond"))
+    markup.add(types.InlineKeyboardButton("➖ کم کردن الماس", callback_data="admin_remove_diamond"))
+    markup.add(types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu"))
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+# ---------- شروع تورنومنت ----------
+@bot.callback_query_handler(func=lambda call: call.data == "admin_start_tournament")
+def admin_start_tournament(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "⛔ دسترسی غیرمجاز", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    # بررسی وجود تورنومنت فعال
+    active = get_active_tournament()
+    if active:
+        bot.send_message(call.message.chat.id, "⚠️ در حال حاضر یک تورنومنت فعال وجود دارد. ابتدا آن را پایان دهید.")
+        return
+    # شروع مراحل دریافت جوایز
+    text = "🎯 لطفاً جایزه نفر اول را به عدد وارد کنید (یا 0 برای عدم جایزه):"
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=None)
+    bot.register_next_step_handler(call.message, admin_set_prize_step, 1, {})  # step 1, prizes dict
+
+def admin_set_prize_step(message, rank, prizes):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    # دریافت عدد
+    if not message.text or not message.text.strip().isdigit():
+        msg = bot.reply_to(message, "لطفاً فقط عدد وارد کنید (مثلاً 1000):")
+        bot.register_next_step_handler(msg, admin_set_prize_step, rank, prizes)
+        return
+    amount = int(message.text.strip())
+    prizes[str(rank)] = amount
+    if rank < 10:
+        next_rank = rank + 1
+        text = f"جایزه نفر {next_rank} را وارد کنید (یا 0):"
+        bot.reply_to(message, text)
+        bot.register_next_step_handler(message, admin_set_prize_step, next_rank, prizes)
+    else:
+        # همه جوایز دریافت شد، ایجاد تورنومنت
+        try:
+            # ذخیره در دیتابیس
+            supabase.table("tournaments").insert({
+                "status": "active",
+                "prizes": json.dumps(prizes)  # ذخیره به صورت JSON
+            }).execute()
+            bot.reply_to(message, "✅ تورنومنت با موفقیت شروع شد! کاربران می‌توانند وارد بخش تورنومنت شوند.")
+            # ارسال اعلان به همه کاربران (اختیاری)
+            # می‌توان از broadcast استفاده کرد
+        except Exception as e:
+            logging.error(f"خطا در شروع تورنومنت: {e}")
+            bot.reply_to(message, f"❌ خطا در شروع تورنومنت: {e}")
+
+# ---------- پایان تورنومنت ----------
+@bot.callback_query_handler(func=lambda call: call.data == "admin_end_tournament")
+def admin_end_tournament(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "⛔ دسترسی غیرمجاز", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    tournament = get_active_tournament()
+    if not tournament:
+        bot.send_message(call.message.chat.id, "❌ هیچ تورنومنت فعالی وجود ندارد.")
+        return
+    tid = tournament['tournament_id']
+    success, msg = end_tournament(tid)
+    bot.send_message(call.message.chat.id, msg)
+    if success:
+        # ارسال پیام به همه کاربران (اختیاری)
+        pass
+
+# ---------- پیام همگانی ----------
+@bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast")
+def admin_broadcast(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "⛔ دسترسی غیرمجاز", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    text = "📢 لطفاً پیام همگانی خود را بنویسید (متن یا با فرمت HTML):"
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=None)
+    bot.register_next_step_handler(call.message, admin_send_broadcast)
+
+def admin_send_broadcast(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    broadcast_text = message.text
+    # دریافت تمام کاربران
+    try:
+        users = supabase.table("users").select("user_id").execute()
+        if not users.data:
+            bot.reply_to(message, "هیچ کاربری یافت نشد.")
+            return
+        count = 0
+        for user in users.data:
+            try:
+                bot.send_message(user['user_id'], broadcast_text)
+                count += 1
+                time.sleep(0.05)  # جلوگیری از محدودیت
+            except Exception:
+                continue
+        bot.reply_to(message, f"✅ پیام به {count} کاربر ارسال شد.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطا در ارسال پیام همگانی: {e}")
+
+# ---------- افزودن الماس (مدیریت) ----------
+@bot.callback_query_handler(func=lambda call: call.data == "admin_add_diamond")
+def admin_add_diamond_prompt(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "⛔ دسترسی غیرمجاز", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    text = "➕ لطفاً آیدی عددی کاربر و مقدار الماس را به صورت زیر وارد کنید:\n`<user_id> <amount>`\nمثال: `123456789 100`"
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=None)
+    bot.register_next_step_handler(call.message, admin_add_diamond_execute)
+
+def admin_add_diamond_execute(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        bot.reply_to(message, "❌ فرمت نامعتبر. مجدداً تلاش کنید.")
+        return
+    user_id, amount = int(parts[0]), int(parts[1])
+    if amount <= 0:
+        bot.reply_to(message, "مقدار باید مثبت باشد.")
+        return
+    if not get_user(user_id):
+        bot.reply_to(message, "کاربر یافت نشد.")
+        return
+    update_diamonds(user_id, amount)
+    bot.reply_to(message, f"✅ {amount} الماس به کاربر {user_id} اضافه شد. موجودی جدید: {get_balance(user_id)}")
+
+# ---------- کم کردن الماس (مدیریت) ----------
+@bot.callback_query_handler(func=lambda call: call.data == "admin_remove_diamond")
+def admin_remove_diamond_prompt(call):
+    if call.from_user.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "⛔ دسترسی غیرمجاز", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    text = "➖ لطفاً آیدی عددی کاربر و مقدار الماس را به صورت زیر وارد کنید:\n`<user_id> <amount>`\nمثال: `123456789 50`"
+    safe_edit_message(text, call.message.chat.id, call.message.message_id, reply_markup=None)
+    bot.register_next_step_handler(call.message, admin_remove_diamond_execute)
+
+def admin_remove_diamond_execute(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        bot.reply_to(message, "❌ فرمت نامعتبر. مجدداً تلاش کنید.")
+        return
+    user_id, amount = int(parts[0]), int(parts[1])
+    if amount <= 0:
+        bot.reply_to(message, "مقدار باید مثبت باشد.")
+        return
+    if not get_user(user_id):
+        bot.reply_to(message, "کاربر یافت نشد.")
+        return
+    balance = get_balance(user_id)
+    deduct = min(amount, balance)
+    update_diamonds(user_id, -deduct)
+    bot.reply_to(message, f"✅ {deduct} الماس از کاربر {user_id} کم شد. موجودی جدید: {get_balance(user_id)}")
 
 # ================== Webhook ==================
 @app.route("/", methods=["GET"])
