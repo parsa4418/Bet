@@ -3,3 +3,4 @@ pyTelegramBotAPI
 supabase
 python-dotenv
 gunicorn
+APScheduler
