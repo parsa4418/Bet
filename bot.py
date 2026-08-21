@@ -1007,7 +1007,7 @@ CASINO_GAME_NAMES = {
     "bowling": "بولینگ",
     "slot": "اسلات",
 }
-CASINO_BET_PRESETS = [10, 50, 100, 500, 1000]
+CASINO_BET_PRESETS = [100000, 500000, 1000000, 5000000, 10000000]
 
 def casino_games_keyboard():
     markup = types.InlineKeyboardMarkup()
