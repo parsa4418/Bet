@@ -618,14 +618,17 @@ def handle_show_referral(call):
 # ================== بخش بانک ==================
 def bank_markup(user_id):
     markup = types.InlineKeyboardMarkup()
-    markup.row(types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu"))
+    markup.row(
+        types.InlineKeyboardButton("💰 وام الماس", callback_data="loanmenu")
+    )
     markup.row(
         types.InlineKeyboardButton("📤 برداشت", callback_data="bankwithdraw"),
         types.InlineKeyboardButton("📥 واریز", callback_data="bankdeposit")
     )
-    return markup
-types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu")
+    markup.row(
+        types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu")
     )
+    return markup
 
 
 def loan_markup():
