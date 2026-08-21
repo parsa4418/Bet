@@ -652,7 +652,7 @@ def bank_text(user_id):
     account_number = user.get("bank_account_number")
     today_interest = min(int(bank_balance * BANK_INTEREST_RATE), BANK_DAILY_INTEREST_MAX)
     return (
-        "🐱 بانک الماس 🏦\n\n"
+        "💎 بانک الماس 🏦\n\n"
         f"💳 شماره حساب : {account_number}\n"
         f"👤 به نام : {user.get('username') or user_id}\n\n"
         f"💰 موجودی حساب : {bank_balance:,} 💎\n\n"
