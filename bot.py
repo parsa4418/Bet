@@ -624,6 +624,8 @@ def bank_markup(user_id):
         types.InlineKeyboardButton("📥 واریز", callback_data="bankdeposit")
     )
     return markup
+types.InlineKeyboardButton("🏠 منوی اصلی", callback_data="mainmenu")
+    )
 
 
 def loan_markup():
