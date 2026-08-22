@@ -715,7 +715,8 @@ def bank_markup(user_id):
     markup.row(types.InlineKeyboardButton("💰 وام الماس", callback_data=f"loanmenu|{user_id}"))
     markup.row(
         types.InlineKeyboardButton("📤 برداشت", callback_data=f"bankwithdraw|{user_id}"),
-        types.InlineKeyboardButton("📥 واریز", callback_data=f"bankdeposit|{user_id}")
+        types.InlineKeyboardButton("📥 واریز", callback_data=f"bankdeposit|{user_id}"),
+        types.InlineKeyboardButton("🏠 منوی اصلی", callback_data=f"mainmenu|{user_id}")
     )
     return markup
 
