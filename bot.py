@@ -2041,14 +2041,12 @@ def factory_panel_text(factory, owner_name):
         f"┘─ 🔺 ظرفیت انبار : {stored:,} / {capacity:,} الماس\n"
         f"┘─ ⭐️ سطح : {factory['warehouse_level']}\n\n"
         "👷‍♂️ کارگران حفار\n"
-        f"┘─ 😺 تعداد کارگران : {factory['workers_hired']} / {workers_max} کارگر\n"
+        f"┘─ 👤 تعداد کارگران : {factory['workers_hired']} / {workers_max} کارگر\n"
         f"┘─ ⭐️ سطح : {factory['workers_level']}\n\n"
         "🖨 دستگاه حفاری\n"
         f"┘─ ⏳ زمان در آوردن هر الماس : {drill_seconds:.1f} ثانیه\n"
         f"┘─ ⭐️ سطح : {factory['machine_level']}\n\n"
-        f"🌟 سطح کارخونه : {factory['factory_level']}\n"
-        f"┘─ {xp}xᴘ / {xp_needed}xᴘ {bar}\n\n"
-        "🧮 شما درحال مدیریت کارخانه خود میباشید."
+        f"🧮 شما درحال مدیریت کارخانه خود میباشید."
     )
 
 def factory_main_markup(owner_id):
