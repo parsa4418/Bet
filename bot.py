@@ -25,8 +25,8 @@ load_dotenv()
 # ================== تنظیمات ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "توکن-خودت-رو-اینجا-بذار")
 ADMIN_IDS = [8904869158, 8196150649, 6094128468]  # آیدی عددی خود را اینجا قرار دهید
-START_DIAMONDS = 10000
-REFERRAL_BONUS = 250000
+START_DIAMONDS = 1000
+REFERRAL_BONUS = 0
 TAX_RATE = 0.10
 TAX_RECEIVER_ID = ADMIN_IDS[0]
 JOIN_TIMEOUT_SECONDS = 60
@@ -900,15 +900,15 @@ FACTORY_MACHINE_DRILL_SECONDS = {
 
 # هزینه ارتقای دستگاه: سطح فعلی -> سطح بعدی
 FACTORY_MACHINE_UPGRADE_COSTS = {
-    1: 50_000,
-    2: 100_000,
-    3: 200_000,
-    4: 350_000,
-    5: 550_000,
-    6: 800_000,
-    7: 1_200_000,
-    8: 1_800_000,
-    9: 2_500_000,
+    1: 500,
+    2: 1_000,
+    3: 2_000,
+    4: 3_500,
+    5: 5_500,
+    6: 8_000,
+    7: 12_000,
+    8: 18_000,
+    9: 25_000,
 }
 
 FACTORY_XP_PER_HARVEST_UNIT = 500
@@ -2049,7 +2049,6 @@ def main_menu_markup(user_id=None):
     markup = types.InlineKeyboardMarkup()
     markup.row(types.InlineKeyboardButton("👤 حساب کاربری", callback_data=f"showaccount|{user_id}" if user_id else "showaccount"))
     markup.row(types.InlineKeyboardButton("📖 راهنما", callback_data=f"showhelp|{user_id}" if user_id else "showhelp"))
-    markup.row(types.InlineKeyboardButton("👥 زیرمجموعه‌گیری", callback_data=f"showreferral|{user_id}" if user_id else "showreferral"))
     if user_id in ADMIN_IDS:
         markup.row(types.InlineKeyboardButton("⚙️ پنل مدیریت", callback_data=f"admin_panel|{user_id}"))
     return markup
