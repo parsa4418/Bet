@@ -3561,11 +3561,9 @@ def start_bet_flow(message, amount):
 
     sent = safe_send_message(
         message.chat.id,
-        f"◈ ━━━━━━━━━━━ ◈\n"
         f"☻ | بازی : شرطبندی\n"
         f"$ | مقدار الماس : {amount:,}\n"
-        f"♛ | سازنده : {creator_name}\n"
-        f"◈ ━━━━━━━━━━━ ◈",
+        f"♛ | سازنده : {creator_name}\n",
     )
     if not sent:
         # پیام ساخته نشد؛ مبلغ رزرو شده باید فوراً برگردد.
@@ -3672,11 +3670,9 @@ def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
     winner_display = winner_name or "کاربر"
     loser_display = loser_name or "کاربر"
     text = (
-        f"◈ ━━━━━━━━━━━ ◈\n"
-        f"⎙ نتیجه باز‌ی ⎙\n\n"
-        f"♧ برنده: {winner_display}\n"
+        f"⎙ نتیجه باز‌ی ⎙\n"
+        f"♧ برنده: {winner_display}\n\n"
         f"⌫ بازنده: {loser_display}\n"
-        f"◈ ━━━━━━━━━━━ ◈"
     )
     result_amount = payout if real_winner_id is not None else 0
     markup = types.InlineKeyboardMarkup()
@@ -3686,7 +3682,7 @@ def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
             callback_data="bet_result_noop",
         ),
         colored_button(
-            f"مالیات ⍗: {tax:,}",
+            f"مالیات :⍗ {tax:,}",
             callback_data="bet_result_noop",
         ),
     )
