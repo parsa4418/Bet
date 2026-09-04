@@ -342,8 +342,8 @@ _transfer_confirm_lock = threading.Lock()
 def _transfer_confirmation_markup(user_id):
     markup = types.InlineKeyboardMarkup()
     markup.row(
-        types.InlineKeyboardButton("خیر ❌", callback_data=f"diamondtransfer|no|{user_id}"),
-        types.InlineKeyboardButton("بله ✅", callback_data=f"diamondtransfer|yes|{user_id}"),
+        types.InlineKeyboardButton("🔴خیر ❌", callback_data=f"diamondtransfer|no|{user_id}"),
+        types.InlineKeyboardButton("🟢بله ✅", callback_data=f"diamondtransfer|yes|{user_id}"),
     )
     return markup
 
