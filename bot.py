@@ -3606,7 +3606,7 @@ def cmd_bet(message):
 def text_bet(message):
     match = re.search(r"شرط\s*بندی?\s+(" + AMOUNT_TOKEN + r")", message.text, re.IGNORECASE)
     if not match:
-        bot.reply_to(message, "فرمت اشتباه است. مثال: شرط بندی 20 یا شرط بندی 20k")
+        bot.reply_to(message, "اشتباه داری میگی برای مثال: شرط بندی 20 یا شرط بندی 2K")
         return
     amount = parse_amount(match.group(1))
     if amount is None:
@@ -3686,7 +3686,7 @@ def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
             callback_data="bet_result_noop",
         ),
         colored_button(
-            f"مالیات : {tax:,}⍗",
+            f"مالیات ⍗: {tax:,}",
             callback_data="bet_result_noop",
         ),
     )
