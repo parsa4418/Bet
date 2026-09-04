@@ -3686,7 +3686,7 @@ def resolve_bet(bet_id, opponent_id, opponent_name, is_bot=False):
             callback_data="bet_result_noop",
         ),
         colored_button(
-            f"⍗ مالیات : {tax:,}",
+            f"مالیات : {tax:,}⍗",
             callback_data="bet_result_noop",
         ),
     )
