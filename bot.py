@@ -68,7 +68,7 @@ load_dotenv()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "توکن-خودت-رو-اینجا-بذار")
 ADMIN_IDS = [8904869158, 8196150649, ]  # آیدی عددی خود را اینجا قرار دهید
 START_DIAMONDS = 25000
-TAX_RATE = 0.10
+TAX_RATE = 0.02
 TAX_RECEIVER_ID = ADMIN_IDS[0]
 JOIN_TIMEOUT_SECONDS = 60
 
