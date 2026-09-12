@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+در# -*- coding: utf-8 -*-
 """
 بات شرط‌بندی الماس با Webhook - نسخه Supabase (کامل)
 اضافه شده: پنل مدیریت، سیستم تورنومنت، رفع باگ شرط
@@ -511,8 +511,8 @@ def text_is(message, *options):
 app = Flask(__name__)
 
 # ================== جوین اجباری فقط در پیوی ==================
-FORCE_JOIN_CHANNEL = "@Crypto_mohamad7"
-FORCE_JOIN_CHANNEL_URL = "https://t.me/Crypto_mohamad7"
+FORCE_JOIN_CHANNEL = "@ParsaSelfBot"
+FORCE_JOIN_CHANNEL_URL = "https://t.me/ParsaSelfBot"
 
 
 def is_force_join_exempt(user_id):
